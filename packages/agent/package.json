@@ -1,0 +1,14 @@
+{
+  "name": "@claude-pool/agent",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "claude-pool": "src/cli.ts"
+  },
+  "dependencies": {
+    "@claude-pool/shared": "workspace:*",
+    "yaml": "^2",
+    "zod": "^3"
+  }
+}

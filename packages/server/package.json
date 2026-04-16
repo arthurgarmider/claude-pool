@@ -1,0 +1,10 @@
+{
+  "name": "@claude-pool/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@claude-pool/shared": "workspace:*",
+    "hono": "^4"
+  }
+}

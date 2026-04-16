@@ -1,0 +1,46 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "claude-pool",
+    },
+    "packages/agent": {
+      "name": "@claude-pool/agent",
+      "version": "0.1.0",
+      "bin": {
+        "claude-pool": "src/cli.ts",
+      },
+      "dependencies": {
+        "@claude-pool/shared": "workspace:*",
+        "yaml": "^2",
+        "zod": "^3",
+      },
+    },
+    "packages/server": {
+      "name": "@claude-pool/server",
+      "version": "0.1.0",
+      "dependencies": {
+        "@claude-pool/shared": "workspace:*",
+        "hono": "^4",
+      },
+    },
+    "packages/shared": {
+      "name": "@claude-pool/shared",
+      "version": "0.1.0",
+    },
+  },
+  "packages": {
+    "@claude-pool/agent": ["@claude-pool/agent@workspace:packages/agent"],
+
+    "@claude-pool/server": ["@claude-pool/server@workspace:packages/server"],
+
+    "@claude-pool/shared": ["@claude-pool/shared@workspace:packages/shared"],
+
+    "hono": ["hono@4.12.14", "", {}, "sha512-am5zfg3yu6sqn5yjKBNqhnTX7Cv+m00ox+7jbaKkrLMRJ4rAdldd1xPd/JzbBWspqaQv6RSTrgFN95EsfhC+7w=="],
+
+    "yaml": ["yaml@2.8.3", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-AvbaCLOO2Otw/lW5bmh9d/WEdcDFdQp2Z2ZUH3pX9U2ihyUY0nvLv7J6TrWowklRGPYbB/IuIMfYgxaCPg5Bpg=="],
+
+    "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+  }
+}

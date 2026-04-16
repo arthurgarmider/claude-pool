@@ -1,0 +1,10 @@
+{
+  "name": "claude-pool",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "bun test --recursive",
+    "test:server": "bun test packages/server",
+    "test:agent": "bun test packages/agent"
+  }
+}
