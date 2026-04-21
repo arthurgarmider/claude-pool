@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite"
 import { trace } from "@claude-pool/shared/src/trace"
-import type {
-  AgentRecord,
-  HeartbeatPayload,
-  AvailableCredentialResponse,
-  AuditEntry,
+import {
+  DEFAULTS,
+  type AgentRecord,
+  type HeartbeatPayload,
+  type AvailableCredentialResponse,
+  type AuditEntry,
 } from "@claude-pool/shared/src/types"
 import type { createCrypto } from "./crypto"
 
@@ -275,8 +276,8 @@ export function createStore(dbPath: string, crypto: Crypto) {
     "store.listAudit",
     (opts: { agentId?: string; since?: number; limit?: number }): AuditEntry[] => {
       const since = opts.since ?? 0
-      const limitRaw = opts.limit ?? 100
-      const limit = Math.max(0, Math.min(limitRaw, 1000))
+      const limitRaw = opts.limit ?? DEFAULTS.AUDIT_DEFAULT_LIMIT
+      const limit = Math.max(0, Math.min(limitRaw, DEFAULTS.AUDIT_MAX_LIMIT))
       const agentId = opts.agentId ?? null
 
       const rows = db
