@@ -106,32 +106,102 @@ export function createStore(dbPath: string, crypto: Crypto) {
     }
   )
 
-  // acquire/release/cooldown/audit are added in subsequent tasks; placeholder
-  // implementations are kept here so the file compiles after Task 3. Each
-  // following task replaces the relevant block.
   const acquireCredential = trace(
     "store.acquireCredential",
     (requestingAgentId: string): AvailableCredentialResponse | null => {
-      const now = Date.now()
-      const row = db
-        .query(
-          `SELECT a.agentId, a.tokenCiphertext, a.tokenNonce
-             FROM agents a
-            WHERE a.status = 'idle' AND a.agentId != ?
-            ORDER BY a.lastActivityAt ASC
-            LIMIT 1`
-        )
-        .get(requestingAgentId) as
-        | { agentId: string; tokenCiphertext: Buffer; tokenNonce: Buffer }
-        | null
-      if (!row) return null
-      const leaseId = crypto_randomUUID()
-      db.run(
-        "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
-        [leaseId, row.agentId, requestingAgentId, now, 30 * 60 * 1000]
-      )
-      const token = crypto.decryptToken(row.tokenCiphertext, row.tokenNonce)
-      return { token, leaseId }
+      return db.transaction((): AvailableCredentialResponse | null => {
+        const now = Date.now()
+
+        // 1. existing active lease wins
+        const existing = db
+          .query(
+            `SELECT l.id, a.tokenCiphertext, a.tokenNonce
+               FROM leases l
+               JOIN agents a ON a.agentId = l.credentialAgentId
+              WHERE l.leasedTo = ?
+                AND l.releasedAt IS NULL
+                AND (l.leasedAt + l.ttl) > ?`
+          )
+          .get(requestingAgentId, now) as
+          | { id: string; tokenCiphertext: Buffer; tokenNonce: Buffer }
+          | null
+        if (existing) {
+          try {
+            const token = crypto.decryptToken(
+              existing.tokenCiphertext,
+              existing.tokenNonce
+            )
+            return { token, leaseId: existing.id }
+          } catch {
+            // existing lease's lender row is undecryptable; fall through
+          }
+        }
+
+        // 2. fresh idle, not-cooldowned, not-self, no active lease — try each
+        const primaries = db
+          .query(
+            `SELECT a.agentId, a.tokenCiphertext, a.tokenNonce
+               FROM agents a
+               LEFT JOIN leases l
+                 ON l.credentialAgentId = a.agentId
+                AND l.releasedAt IS NULL
+                AND (l.leasedAt + l.ttl) > ?
+              WHERE a.status = 'idle'
+                AND a.agentId != ?
+                AND (a.cooldownUntil IS NULL OR a.cooldownUntil < ?)
+                AND l.id IS NULL
+              ORDER BY a.lastActivityAt ASC`
+          )
+          .all(now, requestingAgentId, now) as Array<{
+            agentId: string
+            tokenCiphertext: Buffer
+            tokenNonce: Buffer
+          }>
+        for (const c of primaries) {
+          try {
+            const token = crypto.decryptToken(c.tokenCiphertext, c.tokenNonce)
+            const leaseId = globalThis.crypto.randomUUID()
+            db.run(
+              "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
+              [leaseId, c.agentId, requestingAgentId, now, 30 * 60 * 1000]
+            )
+            return { token, leaseId }
+          } catch {
+            continue // skip undecryptable candidate
+          }
+        }
+
+        // 3. fallback: share an already-leased idle (cooldown still respected)
+        const fallbacks = db
+          .query(
+            `SELECT a.agentId, a.tokenCiphertext, a.tokenNonce
+               FROM agents a
+              WHERE a.status = 'idle'
+                AND a.agentId != ?
+                AND (a.cooldownUntil IS NULL OR a.cooldownUntil < ?)
+              ORDER BY a.lastActivityAt ASC`
+          )
+          .all(requestingAgentId, now) as Array<{
+            agentId: string
+            tokenCiphertext: Buffer
+            tokenNonce: Buffer
+          }>
+        for (const c of fallbacks) {
+          try {
+            const token = crypto.decryptToken(c.tokenCiphertext, c.tokenNonce)
+            const leaseId = globalThis.crypto.randomUUID()
+            db.run(
+              "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
+              [leaseId, c.agentId, requestingAgentId, now, 30 * 60 * 1000]
+            )
+            return { token, leaseId }
+          } catch {
+            continue
+          }
+        }
+
+        return null
+      })()
     }
   )
 
@@ -155,11 +225,6 @@ export function createStore(dbPath: string, crypto: Crypto) {
     releaseLease,
     expireLeases,
   }
-}
-
-function crypto_randomUUID(): string {
-  // node:crypto is available in Bun; globalThis.crypto is also fine.
-  return globalThis.crypto.randomUUID()
 }
 
 function migrate(db: Database, crypto: Crypto) {

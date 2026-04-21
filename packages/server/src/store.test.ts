@@ -189,4 +189,137 @@ describe("store", () => {
       migrated.db.close()
     })
   })
+
+  describe("leases (acquire)", () => {
+    beforeEach(() => {
+      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.heartbeat({
+        agentId: "a1",
+        status: "idle",
+        lastActivityAt: Date.now() - 20 * 60 * 1000,
+        credentialValid: true,
+      })
+      store.heartbeat({
+        agentId: "a2",
+        status: "active",
+        lastActivityAt: Date.now(),
+        credentialValid: true,
+      })
+    })
+
+    it("returns idle credential with lease (decrypted token)", () => {
+      const result = store.acquireCredential("a2")
+      expect(result).not.toBeNull()
+      expect(result!.token).toBe("tok-alice")
+      expect(result!.leaseId).toBeTruthy()
+    })
+
+    it("returns same lease for same requester (no double-allocate)", () => {
+      const first = store.acquireCredential("a2")!
+      const second = store.acquireCredential("a2")!
+      expect(first.leaseId).toBe(second.leaseId)
+      expect(first.token).toBe(second.token)
+    })
+
+    it("does not return requester's own credential", () => {
+      store.heartbeat({
+        agentId: "a2",
+        status: "idle",
+        lastActivityAt: Date.now() - 30 * 60 * 1000,
+        credentialValid: true,
+      })
+      const result = store.acquireCredential("a2")
+      expect(result!.token).toBe("tok-alice")
+    })
+
+    it("returns null when no idle credentials available", () => {
+      store.heartbeat({
+        agentId: "a1",
+        status: "active",
+        lastActivityAt: Date.now(),
+        credentialValid: true,
+      })
+      const result = store.acquireCredential("a2")
+      expect(result).toBeNull()
+    })
+
+    it("prefers longest-idle agent", () => {
+      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.heartbeat({
+        agentId: "a3",
+        status: "idle",
+        lastActivityAt: Date.now() - 60 * 60 * 1000,
+        credentialValid: true,
+      })
+      const result = store.acquireCredential("a2")
+      expect(result!.token).toBe("tok-carol")
+    })
+
+    it("falls back to already-leased credential when all idle are leased", () => {
+      store.acquireCredential("a2") // takes a1
+      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.heartbeat({
+        agentId: "a3",
+        status: "active",
+        lastActivityAt: Date.now(),
+        credentialValid: true,
+      })
+      const result = store.acquireCredential("a3")
+      expect(result).not.toBeNull()
+      expect(result!.token).toBe("tok-alice")
+    })
+
+    it("concurrent acquire serializes via BEGIN IMMEDIATE — both succeed", async () => {
+      // a1 is the only idle candidate; two borrowers race.
+      // The first tx takes the primary path (fresh lease on a1).
+      // The second tx sees a1 is leased and falls back to sharing a1.
+      // Without BEGIN IMMEDIATE this could occasionally yield two
+      // "primary path" leases on a1 — the regression we are preventing.
+      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.registerAgent({ agentId: "a4", userId: "dave", token: "tok-dave" })
+      store.heartbeat({
+        agentId: "a3",
+        status: "active",
+        lastActivityAt: Date.now(),
+        credentialValid: true,
+      })
+      store.heartbeat({
+        agentId: "a4",
+        status: "active",
+        lastActivityAt: Date.now(),
+        credentialValid: true,
+      })
+      const [r1, r2] = await Promise.all([
+        Promise.resolve(store.acquireCredential("a3")),
+        Promise.resolve(store.acquireCredential("a4")),
+      ])
+      expect(r1).not.toBeNull()
+      expect(r2).not.toBeNull()
+      expect(r1!.token).toBe("tok-alice")
+      expect(r2!.token).toBe("tok-alice")
+      expect(r1!.leaseId).not.toBe(r2!.leaseId)
+    })
+
+    it("skips candidates whose decryption fails (key mismatch)", () => {
+      // simulate a row encrypted under a different key by overwriting
+      // a1's ciphertext bytes with garbage that will fail GCM auth.
+      store.db.run(
+        "UPDATE agents SET tokenCiphertext = ?, tokenNonce = ? WHERE agentId = ?",
+        [Buffer.alloc(48, 0xff), Buffer.alloc(12, 0xff), "a1"]
+      )
+      // a3 is registered as a NEWER idle candidate than a1 (a1 is 20 min old
+      // from beforeEach). Ordering is `lastActivityAt ASC`, so a1 is tried
+      // first, its decrypt throws, and the loop falls through to a3.
+      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.heartbeat({
+        agentId: "a3",
+        status: "idle",
+        lastActivityAt: Date.now() - 10 * 60 * 1000,
+        credentialValid: true,
+      })
+      const result = store.acquireCredential("a2")
+      expect(result!.token).toBe("tok-carol")
+    })
+  })
 })
