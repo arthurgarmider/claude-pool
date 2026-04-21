@@ -121,6 +121,19 @@ describe("routes", () => {
         .get(leaseId) as { requestCount: number }
       expect(row.requestCount).toBe(0)
     })
+
+    it("clamps negative count to 0", async () => {
+      const acq = await app.fetch(req("GET", "/credentials/available?agentId=a2"))
+      const { leaseId } = await acq.json()
+      const res = await app.fetch(
+        req("DELETE", `/credentials/lease/${leaseId}?count=-5`)
+      )
+      expect(res.status).toBe(200)
+      const row = store.db
+        .query("SELECT requestCount FROM leases WHERE id = ?")
+        .get(leaseId) as { requestCount: number }
+      expect(row.requestCount).toBe(0)
+    })
   })
 
   describe("POST /credentials/lease/:id/cooldown", () => {
@@ -230,6 +243,19 @@ describe("routes", () => {
       expect(res.status).toBe(200)
       // we can't easily verify clamping at the response shape; use a separate
       // test in store.test.ts. Here we just confirm the route doesn't 500.
+    })
+
+    it("non-numeric since/limit fall back to defaults (no rows missed, cap respected)", async () => {
+      const res = await app.fetch(
+        req("GET", "/audit?since=not-a-number&limit=also-junk")
+      )
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { entries: unknown[] }
+      // Without the NaN guard, since=NaN would yield 0 rows and limit=NaN
+      // would silently bypass the AUDIT_MAX_LIMIT cap. With the guard,
+      // since defaults to 0 and limit to AUDIT_DEFAULT_LIMIT, so the one
+      // active lease created in beforeEach is returned normally.
+      expect(body.entries).toHaveLength(1)
     })
   })
 

@@ -86,10 +86,12 @@ export function createApp(store: ReturnType<typeof createStore>, authSecret: str
     const agentIdQ = c.req.query("agentId")
     const sinceQ = c.req.query("since")
     const limitQ = c.req.query("limit")
+    const since = sinceQ ? Number.parseInt(sinceQ, 10) : undefined
+    const limit = limitQ ? Number.parseInt(limitQ, 10) : undefined
     const entries = store.listAudit({
       agentId: agentIdQ || undefined,
-      since: sinceQ ? Number.parseInt(sinceQ, 10) : undefined,
-      limit: limitQ ? Number.parseInt(limitQ, 10) : undefined,
+      since: Number.isFinite(since) ? since : undefined,
+      limit: Number.isFinite(limit) ? limit : undefined,
     })
     return c.json({ entries })
   })
