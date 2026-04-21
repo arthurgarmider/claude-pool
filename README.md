@@ -29,10 +29,6 @@ the database file** — anyone with both can decrypt every teammate's token.
 If you ever lose the key, teammates re-register via `claude-pool init`; old
 ciphertext rows are skipped silently on acquire.
 
-Optional env vars:
-- `DEFAULT_COOLDOWN_MS` — fallback bench duration when Anthropic returns 429
-  with no `Retry-After`. Default: `60000`.
-
 ### Agent (each developer)
 
 ```bash
