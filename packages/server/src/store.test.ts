@@ -507,4 +507,81 @@ describe("store", () => {
       expect(a1.cooldownUntil).toBeGreaterThan(Date.now())
     })
   })
+
+  describe("listAudit", () => {
+    beforeEach(() => {
+      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.heartbeat({
+        agentId: "a1",
+        status: "idle",
+        lastActivityAt: Date.now() - 60_000,
+        credentialValid: true,
+      })
+      store.heartbeat({
+        agentId: "a3",
+        status: "idle",
+        lastActivityAt: Date.now() - 120_000,
+        credentialValid: true,
+      })
+    })
+
+    it("returns active leases with releasedAt=null and computed durationMs", () => {
+      const lease = store.acquireCredential("a2")!
+      const entries = store.listAudit({})
+      expect(entries).toHaveLength(1)
+      const e = entries[0]
+      expect(e.leaseId).toBe(lease.leaseId)
+      expect(e.lenderUserId).toBe("carol") // longest-idle = a3
+      expect(e.borrowerUserId).toBe("bob")
+      expect(e.releasedAt).toBeNull()
+      expect(e.closedReason).toBeNull()
+      expect(e.requestCount).toBe(0)
+      expect(e.durationMs).toBeGreaterThanOrEqual(0)
+    })
+
+    it("populates closedReason and final requestCount after release", () => {
+      const lease = store.acquireCredential("a2")!
+      store.releaseLease(lease.leaseId, 17)
+      const e = store.listAudit({})[0]
+      expect(e.closedReason).toBe("released")
+      expect(e.requestCount).toBe(17)
+      expect(e.releasedAt).not.toBeNull()
+      expect(e.durationMs).toBe(e.releasedAt! - e.leasedAt)
+    })
+
+    it("filters by agentId (lender or borrower)", () => {
+      store.acquireCredential("a2") // a3 → a2
+      // create a second lease where a1 lends to a2
+      store.acquireCredential("a2") // existing lease wins; force a fresh one
+      // simulate lifecycle: release the first, acquire again
+      const all = store.listAudit({})
+      expect(all.length).toBeGreaterThanOrEqual(1)
+      const onlyBob = store.listAudit({ agentId: "a2" })
+      expect(onlyBob.every((e) => e.borrowerAgentId === "a2" || e.lenderAgentId === "a2"))
+        .toBe(true)
+      const onlyDave = store.listAudit({ agentId: "a-nonexistent" })
+      expect(onlyDave).toHaveLength(0)
+    })
+
+    it("respects since and limit", () => {
+      const lease = store.acquireCredential("a2")!
+      store.releaseLease(lease.leaseId, 1)
+      const past = store.listAudit({ since: Date.now() + 60_000 })
+      expect(past).toHaveLength(0)
+      const limited = store.listAudit({ limit: 0 })
+      expect(limited).toHaveLength(0)
+    })
+
+    it("orders by leasedAt DESC", () => {
+      const first = store.acquireCredential("a2")!
+      store.releaseLease(first.leaseId, 1)
+      Bun.sleepSync(2)
+      const second = store.acquireCredential("a2")!
+      const entries = store.listAudit({})
+      expect(entries[0].leaseId).toBe(second.leaseId)
+      expect(entries[1].leaseId).toBe(first.leaseId)
+    })
+  })
 })

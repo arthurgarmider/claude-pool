@@ -4,6 +4,7 @@ import type {
   AgentRecord,
   HeartbeatPayload,
   AvailableCredentialResponse,
+  AuditEntry,
 } from "@claude-pool/shared/src/types"
 import type { createCrypto } from "./crypto"
 
@@ -270,6 +271,53 @@ export function createStore(dbPath: string, crypto: Crypto) {
     }
   )
 
+  const listAudit = trace(
+    "store.listAudit",
+    (opts: { agentId?: string; since?: number; limit?: number }): AuditEntry[] => {
+      const since = opts.since ?? 0
+      const limitRaw = opts.limit ?? 100
+      const limit = Math.max(0, Math.min(limitRaw, 1000))
+      const agentId = opts.agentId ?? null
+
+      const rows = db
+        .query(
+          `SELECT l.id           AS leaseId,
+                  l.credentialAgentId AS lenderAgentId,
+                  lender.userId   AS lenderUserId,
+                  l.leasedTo      AS borrowerAgentId,
+                  borrower.userId AS borrowerUserId,
+                  l.leasedAt      AS leasedAt,
+                  l.releasedAt    AS releasedAt,
+                  l.requestCount  AS requestCount,
+                  l.closedReason  AS closedReason
+             FROM leases l
+             JOIN agents lender   ON lender.agentId   = l.credentialAgentId
+             JOIN agents borrower ON borrower.agentId = l.leasedTo
+            WHERE (? IS NULL OR l.leasedTo = ? OR l.credentialAgentId = ?)
+              AND l.leasedAt >= ?
+            ORDER BY l.leasedAt DESC
+            LIMIT ?`
+        )
+        .all(agentId, agentId, agentId, since, limit) as Array<{
+          leaseId: string
+          lenderAgentId: string
+          lenderUserId: string
+          borrowerAgentId: string
+          borrowerUserId: string
+          leasedAt: number
+          releasedAt: number | null
+          requestCount: number
+          closedReason: AuditEntry["closedReason"]
+        }>
+
+      const now = Date.now()
+      return rows.map((r) => ({
+        ...r,
+        durationMs: (r.releasedAt ?? now) - r.leasedAt,
+      }))
+    }
+  )
+
   return {
     db,
     registerAgent,
@@ -282,6 +330,7 @@ export function createStore(dbPath: string, crypto: Crypto) {
     expireLeases,
     markLeaseCooldown,
     markAgentCooldown,
+    listAudit,
   }
 }
 
