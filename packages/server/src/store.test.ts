@@ -324,4 +324,98 @@ describe("store", () => {
       expect(result!.token).toBe("tok-carol")
     })
   })
+
+  describe("leases (release/expire)", () => {
+    beforeEach(() => {
+      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.heartbeat({
+        agentId: "a1",
+        status: "idle",
+        lastActivityAt: Date.now() - 20 * 60 * 1000,
+        credentialValid: true,
+      })
+    })
+
+    it("releaseLease records releasedAt, requestCount, closedReason='released'", () => {
+      const result = store.acquireCredential("a2")!
+      store.releaseLease(result.leaseId, 7)
+      const row = store.db
+        .query("SELECT releasedAt, requestCount, closedReason FROM leases WHERE id = ?")
+        .get(result.leaseId) as {
+          releasedAt: number | null
+          requestCount: number
+          closedReason: string | null
+        }
+      expect(row.releasedAt).not.toBeNull()
+      expect(row.requestCount).toBe(7)
+      expect(row.closedReason).toBe("released")
+    })
+
+    it("releaseLease with no count defaults requestCount to 0", () => {
+      const result = store.acquireCredential("a2")!
+      store.releaseLease(result.leaseId)
+      const row = store.db
+        .query("SELECT requestCount FROM leases WHERE id = ?")
+        .get(result.leaseId) as { requestCount: number }
+      expect(row.requestCount).toBe(0)
+    })
+
+    it("releaseLease called twice is a no-op (does not stomp first close)", () => {
+      const result = store.acquireCredential("a2")!
+      store.releaseLease(result.leaseId, 5)
+      const firstClose = store.db
+        .query("SELECT releasedAt, requestCount FROM leases WHERE id = ?")
+        .get(result.leaseId) as { releasedAt: number; requestCount: number }
+      // sleep a tick then attempt to overwrite
+      Bun.sleepSync(2)
+      store.releaseLease(result.leaseId, 9999)
+      const after = store.db
+        .query("SELECT releasedAt, requestCount FROM leases WHERE id = ?")
+        .get(result.leaseId) as { releasedAt: number; requestCount: number }
+      expect(after.releasedAt).toBe(firstClose.releasedAt)
+      expect(after.requestCount).toBe(5)
+    })
+
+    it("released leases free the lender for a fresh primary-path acquire", () => {
+      const first = store.acquireCredential("a2")!
+      store.releaseLease(first.leaseId, 3)
+      const next = store.acquireCredential("a2")!
+      expect(next.leaseId).not.toBe(first.leaseId)
+      expect(next.token).toBe("tok-alice")
+    })
+
+    it("expireLeases UPDATEs old leases with closedReason='expired'", () => {
+      const result = store.acquireCredential("a2")!
+      store.db.run("UPDATE leases SET leasedAt = ? WHERE id = ?", [
+        Date.now() - 31 * 60 * 1000,
+        result.leaseId,
+      ])
+      store.expireLeases(30 * 60 * 1000)
+      const row = store.db
+        .query("SELECT releasedAt, closedReason FROM leases WHERE id = ?")
+        .get(result.leaseId) as { releasedAt: number | null; closedReason: string | null }
+      expect(row.releasedAt).not.toBeNull()
+      expect(row.closedReason).toBe("expired")
+    })
+
+    it("expireLeases skips already-released leases", () => {
+      const result = store.acquireCredential("a2")!
+      store.releaseLease(result.leaseId, 4)
+      const beforeReason = store.db
+        .query("SELECT closedReason FROM leases WHERE id = ?")
+        .get(result.leaseId) as { closedReason: string }
+      // backdate so the cutoff would have caught it
+      store.db.run("UPDATE leases SET leasedAt = ? WHERE id = ?", [
+        Date.now() - 31 * 60 * 1000,
+        result.leaseId,
+      ])
+      store.expireLeases(30 * 60 * 1000)
+      const after = store.db
+        .query("SELECT closedReason FROM leases WHERE id = ?")
+        .get(result.leaseId) as { closedReason: string }
+      expect(after.closedReason).toBe(beforeReason.closedReason)
+      expect(after.closedReason).toBe("released")
+    })
+  })
 })

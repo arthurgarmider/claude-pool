@@ -210,13 +210,29 @@ export function createStore(dbPath: string, crypto: Crypto) {
     }
   )
 
-  const releaseLease = trace("store.releaseLease", (leaseId: string) => {
-    db.run("DELETE FROM leases WHERE id = ?", [leaseId])
-  })
+  const releaseLease = trace(
+    "store.releaseLease",
+    (leaseId: string, requestCount: number = 0) => {
+      db.run(
+        `UPDATE leases
+            SET releasedAt = ?,
+                requestCount = ?,
+                closedReason = 'released'
+          WHERE id = ? AND releasedAt IS NULL`,
+        [Date.now(), requestCount, leaseId]
+      )
+    }
+  )
 
   const expireLeases = trace("store.expireLeases", (ttlMs: number) => {
-    const cutoff = Date.now() - ttlMs
-    db.run("DELETE FROM leases WHERE leasedAt < ?", [cutoff])
+    const now = Date.now()
+    db.run(
+      `UPDATE leases
+          SET releasedAt = ?,
+              closedReason = 'expired'
+        WHERE releasedAt IS NULL AND (leasedAt + ttl) < ?`,
+      [now, now]
+    )
   })
 
   return {
