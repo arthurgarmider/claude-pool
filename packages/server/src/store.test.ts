@@ -418,4 +418,93 @@ describe("store", () => {
       expect(after.closedReason).toBe("released")
     })
   })
+
+  describe("cooldown", () => {
+    beforeEach(() => {
+      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.heartbeat({
+        agentId: "a1",
+        status: "idle",
+        lastActivityAt: Date.now() - 20 * 60 * 1000,
+        credentialValid: true,
+      })
+      store.heartbeat({
+        agentId: "a2",
+        status: "active",
+        lastActivityAt: Date.now(),
+        credentialValid: true,
+      })
+    })
+
+    it("markLeaseCooldown sets owner cooldownUntil and closes lease as 'cooldown'", () => {
+      const result = store.acquireCredential("a2")!
+      store.markLeaseCooldown(result.leaseId, 5_000, 11)
+      const lease = store.db
+        .query(
+          "SELECT releasedAt, requestCount, closedReason FROM leases WHERE id = ?"
+        )
+        .get(result.leaseId) as {
+          releasedAt: number | null
+          requestCount: number
+          closedReason: string
+        }
+      expect(lease.releasedAt).not.toBeNull()
+      expect(lease.requestCount).toBe(11)
+      expect(lease.closedReason).toBe("cooldown")
+      const a1 = store.db
+        .query("SELECT cooldownUntil FROM agents WHERE agentId = ?")
+        .get("a1") as { cooldownUntil: number }
+      expect(a1.cooldownUntil).toBeGreaterThan(Date.now())
+    })
+
+    it("acquireCredential skips cooldowned lenders (primary path)", () => {
+      // mark a1 cooldowned for the next minute
+      store.markAgentCooldown("a1", 60_000)
+      const result = store.acquireCredential("a2")
+      expect(result).toBeNull()
+    })
+
+    it("acquireCredential skips cooldowned lenders even on the fallback path", () => {
+      // a3 is also idle; a1 cooldowned, so a3 should be picked
+      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.heartbeat({
+        agentId: "a3",
+        status: "idle",
+        lastActivityAt: Date.now() - 30 * 60 * 1000,
+        credentialValid: true,
+      })
+      store.markAgentCooldown("a1", 60_000)
+      // pre-lease a3 to force the fallback path
+      store.acquireCredential("a2") // takes a3 (a1 cooldowned)
+      // another borrower should fall back to sharing a3, never picking a1
+      store.registerAgent({ agentId: "a4", userId: "dave", token: "tok-dave" })
+      store.heartbeat({
+        agentId: "a4",
+        status: "active",
+        lastActivityAt: Date.now(),
+        credentialValid: true,
+      })
+      const result = store.acquireCredential("a4")!
+      expect(result.token).toBe("tok-carol")
+    })
+
+    it("acquireCredential picks up agents after cooldown expires", () => {
+      // set cooldownUntil already in the past
+      store.db.run(
+        "UPDATE agents SET cooldownUntil = ? WHERE agentId = ?",
+        [Date.now() - 1, "a1"]
+      )
+      const result = store.acquireCredential("a2")
+      expect(result!.token).toBe("tok-alice")
+    })
+
+    it("markAgentCooldown is independent of any lease", () => {
+      store.markAgentCooldown("a1", 30_000)
+      const a1 = store.db
+        .query("SELECT cooldownUntil FROM agents WHERE agentId = ?")
+        .get("a1") as { cooldownUntil: number }
+      expect(a1.cooldownUntil).toBeGreaterThan(Date.now())
+    })
+  })
 })

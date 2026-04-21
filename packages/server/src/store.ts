@@ -235,6 +235,41 @@ export function createStore(dbPath: string, crypto: Crypto) {
     )
   })
 
+  const markLeaseCooldown = trace(
+    "store.markLeaseCooldown",
+    (leaseId: string, retryAfterMs: number, requestCount: number) => {
+      const now = Date.now()
+      const effective = retryAfterMs > 0 ? retryAfterMs : 60_000
+      db.transaction(() => {
+        db.run(
+          `UPDATE agents
+              SET cooldownUntil = ?
+            WHERE agentId = (SELECT credentialAgentId FROM leases WHERE id = ?)`,
+          [now + effective, leaseId]
+        )
+        db.run(
+          `UPDATE leases
+              SET releasedAt = ?,
+                  requestCount = ?,
+                  closedReason = 'cooldown'
+            WHERE id = ? AND releasedAt IS NULL`,
+          [now, requestCount, leaseId]
+        )
+      })()
+    }
+  )
+
+  const markAgentCooldown = trace(
+    "store.markAgentCooldown",
+    (agentId: string, retryAfterMs: number) => {
+      const effective = retryAfterMs > 0 ? retryAfterMs : 60_000
+      db.run(
+        "UPDATE agents SET cooldownUntil = ? WHERE agentId = ?",
+        [Date.now() + effective, agentId]
+      )
+    }
+  )
+
   return {
     db,
     registerAgent,
@@ -245,6 +280,8 @@ export function createStore(dbPath: string, crypto: Crypto) {
     acquireCredential,
     releaseLease,
     expireLeases,
+    markLeaseCooldown,
+    markAgentCooldown,
   }
 }
 
