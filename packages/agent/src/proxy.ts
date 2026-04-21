@@ -14,10 +14,12 @@ type CachedCredential = {
   token: string
   leaseId: string
   acquiredAt: number
+  requestCount: number
 }
 
 export function createProxy(config: ProxyConfig) {
   let cachedCredential: CachedCredential | null = null
+  let localAgentCooldownUntil = 0
   const cacheTtlMs = DEFAULTS.LEASE_TTL_MS
 
   const fetchCredentialFromPool = trace(
@@ -33,22 +35,66 @@ export function createProxy(config: ProxyConfig) {
           token: string
           leaseId: string
         }
-        return { token, leaseId, acquiredAt: Date.now() }
+        return { token, leaseId, acquiredAt: Date.now(), requestCount: 0 }
       } catch {
         return null
       }
     }
   )
 
-  const releaseLease = async (leaseId: string) => {
+  const releaseLease = async (leaseId: string, count: number) => {
     try {
-      await fetch(`${config.serverUrl}/credentials/lease/${leaseId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${config.serverSecret}` },
+      await fetch(
+        `${config.serverUrl}/credentials/lease/${leaseId}?count=${count}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${config.serverSecret}` },
+        }
+      )
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  const cooldownLease = async (
+    leaseId: string,
+    retryAfterSeconds: number,
+    count: number
+  ) => {
+    try {
+      await fetch(`${config.serverUrl}/credentials/lease/${leaseId}/cooldown`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.serverSecret}`,
+        },
+        body: JSON.stringify({ retryAfterSeconds, count }),
       })
     } catch {
-      // best-effort
+      /* best-effort */
     }
+  }
+
+  const cooldownAgent = async (agentId: string, retryAfterSeconds: number) => {
+    try {
+      await fetch(`${config.serverUrl}/agents/${agentId}/cooldown`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.serverSecret}`,
+        },
+        body: JSON.stringify({ retryAfterSeconds }),
+      })
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  const parseRetryAfter = (res: Response): number => {
+    const raw = res.headers.get("retry-after")
+    if (!raw) return 0
+    const n = Number.parseInt(raw, 10)
+    return Number.isFinite(n) && n >= 0 ? n : 0
   }
 
   const forwardRequest = async (
@@ -58,7 +104,8 @@ export function createProxy(config: ProxyConfig) {
     body: ArrayBuffer,
     authToken: string
   ): Promise<Response> => {
-    const targetUrl = `${config.anthropicBaseUrl}${new URL(url).pathname}${new URL(url).search}`
+    const u = new URL(url)
+    const targetUrl = `${config.anthropicBaseUrl}${u.pathname}${u.search}`
 
     const fwdHeaders = new Headers(headers)
     const isOauthToken = authToken.startsWith("sk-ant-oat")
@@ -69,8 +116,6 @@ export function createProxy(config: ProxyConfig) {
       fwdHeaders.set("x-api-key", authToken)
     }
     fwdHeaders.delete("host")
-    // Bun's fetch auto-decompresses responses; strip Accept-Encoding so
-    // Anthropic sends plain bytes that Claude Code can read directly
     fwdHeaders.delete("accept-encoding")
 
     const upstream = await fetch(targetUrl, {
@@ -79,8 +124,6 @@ export function createProxy(config: ProxyConfig) {
       body: method !== "GET" && method !== "HEAD" ? body : undefined,
     })
 
-    // Bun auto-decompresses the body but may still forward Content-Encoding,
-    // which would cause the client to try decompressing already-decoded bytes
     const resHeaders = new Headers(upstream.headers)
     resHeaders.delete("content-encoding")
     resHeaders.delete("transfer-encoding")
@@ -92,7 +135,7 @@ export function createProxy(config: ProxyConfig) {
     })
   }
 
-    const server = Bun.serve({
+  const server = Bun.serve({
     port: config.port,
     hostname: "127.0.0.1",
     async fetch(req) {
@@ -108,34 +151,44 @@ export function createProxy(config: ProxyConfig) {
       const reqUrl = req.url
       const reqMethod = req.method
       const reqHeaders = new Headers(req.headers)
+      const agentId = req.headers.get("X-Claude-Pool-Agent-Id") || "default"
 
-      // try with original credentials
-      const response = await forwardRequest(
-        reqUrl,
-        reqMethod,
-        reqHeaders,
-        bodyBytes,
-        originalAuth
-      )
-      if (response.status !== 429) {
-        return response
+      // 1. try own token, unless we already know it's cooled down locally
+      if (Date.now() >= localAgentCooldownUntil) {
+        const ownResponse = await forwardRequest(
+          reqUrl,
+          reqMethod,
+          reqHeaders,
+          bodyBytes,
+          originalAuth
+        )
+        if (ownResponse.status !== 429) {
+          // own-token success path: do NOT touch the cached borrowed counter
+          return ownResponse
+        }
+
+        // own token 429 → bench self locally + on the server, drain body
+        const ownRetryAfter = parseRetryAfter(ownResponse)
+        await ownResponse.arrayBuffer().catch(() => {})
+        const cooldownMs =
+          ownRetryAfter > 0
+            ? ownRetryAfter * 1000
+            : DEFAULTS.DEFAULT_COOLDOWN_MS
+        localAgentCooldownUntil = Date.now() + cooldownMs
+        cooldownAgent(agentId, ownRetryAfter).catch(() => {})
       }
 
-      // 429 — attempt failover
-      const agentId =
-        req.headers.get("X-Claude-Pool-Agent-Id") || "default"
-
+      // 2. failover loop (entered either after a fresh 429 or because we're
+      // still in the local cooldown window from an earlier 429)
       for (let attempt = 0; attempt < config.maxRetries; attempt++) {
-        // check cache validity
         if (
           cachedCredential &&
           Date.now() - cachedCredential.acquiredAt > cacheTtlMs
         ) {
-          await releaseLease(cachedCredential.leaseId)
+          await releaseLease(cachedCredential.leaseId, cachedCredential.requestCount)
           cachedCredential = null
         }
 
-        // get credential from cache or pool
         if (!cachedCredential) {
           cachedCredential = await fetchCredentialFromPool(agentId)
         }
@@ -157,13 +210,19 @@ export function createProxy(config: ProxyConfig) {
           bodyBytes,
           cachedCredential.token
         )
+
         if (retryResponse.status !== 429) {
+          cachedCredential.requestCount += 1
           return retryResponse
         }
 
-        // this credential is also exhausted — release and try another
-        await releaseLease(cachedCredential.leaseId)
+        // borrowed credential 429 → cooldown it on the server, drop cache
+        const borrowedRetryAfter = parseRetryAfter(retryResponse)
+        await retryResponse.arrayBuffer().catch(() => {})
+        const finalCount = cachedCredential.requestCount
+        const exhaustedLeaseId = cachedCredential.leaseId
         cachedCredential = null
+        await cooldownLease(exhaustedLeaseId, borrowedRetryAfter, finalCount)
       }
 
       return new Response(JSON.stringify({ error: "rate limited" }), {
@@ -178,7 +237,7 @@ export function createProxy(config: ProxyConfig) {
 
   const stop = () => {
     if (cachedCredential) {
-      releaseLease(cachedCredential.leaseId)
+      releaseLease(cachedCredential.leaseId, cachedCredential.requestCount)
       cachedCredential = null
     }
     server.stop()
