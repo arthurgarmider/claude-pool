@@ -270,12 +270,14 @@ describe("store", () => {
       expect(result!.token).toBe("tok-alice")
     })
 
-    it("concurrent acquire serializes via BEGIN IMMEDIATE — both succeed", async () => {
-      // a1 is the only idle candidate; two borrowers race.
+    it("two acquires in flight are serialized — both succeed via primary+fallback", async () => {
+      // a1 is the only idle candidate; two borrowers "race".
       // The first tx takes the primary path (fresh lease on a1).
-      // The second tx sees a1 is leased and falls back to sharing a1.
-      // Without BEGIN IMMEDIATE this could occasionally yield two
-      // "primary path" leases on a1 — the regression we are preventing.
+      // The second tx sees a1 is already leased and falls back to sharing a1.
+      // bun:sqlite calls are synchronous, so this test exercises the logical
+      // primary-then-fallback serialization rather than true concurrent execution.
+      // The transactional wrapper protects against multi-connection races
+      // (see the comment in store.ts:acquireCredential).
       store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
       store.registerAgent({ agentId: "a4", userId: "dave", token: "tok-dave" })
       store.heartbeat({

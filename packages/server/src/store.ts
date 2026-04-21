@@ -109,6 +109,11 @@ export function createStore(dbPath: string, crypto: Crypto) {
   const acquireCredential = trace(
     "store.acquireCredential",
     (requestingAgentId: string): AvailableCredentialResponse | null => {
+      // bun:sqlite's db.transaction() opens BEGIN DEFERRED. With a single
+      // in-process SQLite connection and synchronous bun:sqlite calls, the JS
+      // event loop serializes every transaction body, so DEFERRED is sufficient
+      // to guarantee race-free read-modify-write here. If we ever move to a
+      // multi-process / multi-connection model, switch to BEGIN IMMEDIATE.
       return db.transaction((): AvailableCredentialResponse | null => {
         const now = Date.now()
 
