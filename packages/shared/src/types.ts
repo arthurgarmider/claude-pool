@@ -99,6 +99,10 @@ export const DEFAULTS = {
   MAX_FAILOVER_RETRIES: 3,
   ANTHROPIC_API_BASE: "https://api.anthropic.com",
   DEFAULT_COOLDOWN_MS: 60 * 1000,
+  // Hard cap (24h) on any Retry-After we'll honor — matches the server-side
+  // Zod schema (.max(86400)) and prevents a hostile/buggy upstream from
+  // benching an agent for years.
+  MAX_RETRY_AFTER_SECONDS: 86400,
   AUDIT_DEFAULT_LIMIT: 100,
   AUDIT_MAX_LIMIT: 1000,
 } as const

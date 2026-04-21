@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { trace } from "@claude-pool/shared/src/trace"
+import { trace, traceQuiet } from "@claude-pool/shared/src/trace"
 import {
   DEFAULTS,
   type AgentRecord,
@@ -7,9 +7,7 @@ import {
   type AvailableCredentialResponse,
   type AuditEntry,
 } from "@claude-pool/shared/src/types"
-import type { createCrypto } from "./crypto"
-
-type Crypto = ReturnType<typeof createCrypto>
+import type { Crypto } from "./crypto"
 
 export function createStore(dbPath: string, crypto: Crypto) {
   const db = new Database(dbPath)
@@ -55,7 +53,7 @@ export function createStore(dbPath: string, crypto: Crypto) {
       ON leases(leasedTo, leasedAt DESC)
   `)
 
-  const registerAgent = trace(
+  const registerAgent = traceQuiet(
     "store.registerAgent",
     (payload: { agentId: string; userId: string; token: string }) => {
       const now = Date.now()
@@ -170,7 +168,7 @@ export function createStore(dbPath: string, crypto: Crypto) {
             const leaseId = globalThis.crypto.randomUUID()
             db.run(
               "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
-              [leaseId, c.agentId, requestingAgentId, now, 30 * 60 * 1000]
+              [leaseId, c.agentId, requestingAgentId, now, DEFAULTS.LEASE_TTL_MS]
             )
             return { token, leaseId }
           } catch {
@@ -199,7 +197,7 @@ export function createStore(dbPath: string, crypto: Crypto) {
             const leaseId = globalThis.crypto.randomUUID()
             db.run(
               "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
-              [leaseId, c.agentId, requestingAgentId, now, 30 * 60 * 1000]
+              [leaseId, c.agentId, requestingAgentId, now, DEFAULTS.LEASE_TTL_MS]
             )
             return { token, leaseId }
           } catch {
@@ -241,7 +239,7 @@ export function createStore(dbPath: string, crypto: Crypto) {
     "store.markLeaseCooldown",
     (leaseId: string, retryAfterMs: number, requestCount: number) => {
       const now = Date.now()
-      const effective = retryAfterMs > 0 ? retryAfterMs : 60_000
+      const effective = retryAfterMs > 0 ? retryAfterMs : DEFAULTS.DEFAULT_COOLDOWN_MS
       db.transaction(() => {
         db.run(
           `UPDATE agents
@@ -264,7 +262,7 @@ export function createStore(dbPath: string, crypto: Crypto) {
   const markAgentCooldown = trace(
     "store.markAgentCooldown",
     (agentId: string, retryAfterMs: number) => {
-      const effective = retryAfterMs > 0 ? retryAfterMs : 60_000
+      const effective = retryAfterMs > 0 ? retryAfterMs : DEFAULTS.DEFAULT_COOLDOWN_MS
       db.run(
         "UPDATE agents SET cooldownUntil = ? WHERE agentId = ?",
         [Date.now() + effective, agentId]

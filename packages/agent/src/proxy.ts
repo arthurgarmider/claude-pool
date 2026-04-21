@@ -167,8 +167,11 @@ export function createProxy(config: ProxyConfig) {
           return ownResponse
         }
 
-        // own token 429 → bench self locally + on the server, drain body
-        const ownRetryAfter = parseRetryAfter(ownResponse)
+        // own token 429 → bench self locally + on the server, drain body.
+        // Cap Retry-After at 24h so an upstream bug or hostile header can't
+        // bench us for years; the server-side Zod schema enforces the same cap.
+        const rawRetryAfter = parseRetryAfter(ownResponse)
+        const ownRetryAfter = Math.min(rawRetryAfter, DEFAULTS.MAX_RETRY_AFTER_SECONDS)
         await ownResponse.arrayBuffer().catch(() => {})
         const cooldownMs =
           ownRetryAfter > 0
@@ -217,7 +220,10 @@ export function createProxy(config: ProxyConfig) {
         }
 
         // borrowed credential 429 → cooldown it on the server, drop cache
-        const borrowedRetryAfter = parseRetryAfter(retryResponse)
+        const borrowedRetryAfter = Math.min(
+          parseRetryAfter(retryResponse),
+          DEFAULTS.MAX_RETRY_AFTER_SECONDS
+        )
         await retryResponse.arrayBuffer().catch(() => {})
         const finalCount = cachedCredential.requestCount
         const exhaustedLeaseId = cachedCredential.leaseId
