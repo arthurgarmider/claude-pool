@@ -1,5 +1,11 @@
 import { Hono } from "hono"
-import { RegisterPayloadSchema, HeartbeatPayloadSchema } from "@claude-pool/shared/src/types"
+import {
+  RegisterPayloadSchema,
+  HeartbeatPayloadSchema,
+  CooldownPayloadSchema,
+  AgentCooldownPayloadSchema,
+  DEFAULTS,
+} from "@claude-pool/shared/src/types"
 import type { createStore } from "./store"
 
 export function createApp(store: ReturnType<typeof createStore>, authSecret: string) {
@@ -17,47 +23,75 @@ export function createApp(store: ReturnType<typeof createStore>, authSecret: str
 
   app.post("/agents/register", async (c) => {
     const parsed = RegisterPayloadSchema.safeParse(await c.req.json())
-    if (!parsed.success) {
-      return c.json({ error: parsed.error.message }, 400)
-    }
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400)
     store.registerAgent(parsed.data)
     return c.json({ ok: true })
   })
 
   app.post("/agents/heartbeat", async (c) => {
     const parsed = HeartbeatPayloadSchema.safeParse(await c.req.json())
-    if (!parsed.success) {
-      return c.json({ error: parsed.error.message }, 400)
-    }
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400)
     store.heartbeat(parsed.data)
+    return c.json({ ok: true })
+  })
+
+  app.post("/agents/:id/cooldown", async (c) => {
+    const parsed = AgentCooldownPayloadSchema.safeParse(await c.req.json())
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400)
+    const ms =
+      parsed.data.retryAfterSeconds > 0
+        ? parsed.data.retryAfterSeconds * 1000
+        : DEFAULTS.DEFAULT_COOLDOWN_MS
+    store.markAgentCooldown(c.req.param("id"), ms)
     return c.json({ ok: true })
   })
 
   app.get("/credentials/available", (c) => {
     const agentId = c.req.query("agentId")
-    if (!agentId) {
-      return c.json({ error: "agentId query param required" }, 400)
-    }
+    if (!agentId) return c.json({ error: "agentId query param required" }, 400)
     const result = store.acquireCredential(agentId)
-    if (!result) {
-      return c.json({ error: "no credentials available" }, 404)
-    }
+    if (!result) return c.json({ error: "no credentials available" }, 404)
     return c.json(result)
   })
 
   app.delete("/credentials/lease/:id", (c) => {
-    store.releaseLease(c.req.param("id"))
+    const raw = c.req.query("count")
+    const parsed = raw === undefined ? 0 : Number.parseInt(raw, 10)
+    const count = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+    store.releaseLease(c.req.param("id"), count)
+    return c.json({ ok: true })
+  })
+
+  app.post("/credentials/lease/:id/cooldown", async (c) => {
+    const parsed = CooldownPayloadSchema.safeParse(await c.req.json())
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400)
+    const ms =
+      parsed.data.retryAfterSeconds > 0
+        ? parsed.data.retryAfterSeconds * 1000
+        : DEFAULTS.DEFAULT_COOLDOWN_MS
+    store.markLeaseCooldown(c.req.param("id"), ms, parsed.data.count ?? 0)
     return c.json({ ok: true })
   })
 
   app.get("/agents", (c) => {
-    const agents = store.listAgents().map(({ token, ...rest }) => rest)
-    return c.json({ agents })
+    return c.json({ agents: store.listAgents() })
   })
 
   app.delete("/agents/:id", (c) => {
     store.removeAgent(c.req.param("id"))
     return c.json({ ok: true })
+  })
+
+  app.get("/audit", (c) => {
+    const agentIdQ = c.req.query("agentId")
+    const sinceQ = c.req.query("since")
+    const limitQ = c.req.query("limit")
+    const entries = store.listAudit({
+      agentId: agentIdQ || undefined,
+      since: sinceQ ? Number.parseInt(sinceQ, 10) : undefined,
+      limit: limitQ ? Number.parseInt(limitQ, 10) : undefined,
+    })
+    return c.json({ entries })
   })
 
   return app
