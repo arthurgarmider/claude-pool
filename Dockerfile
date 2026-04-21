@@ -3,7 +3,7 @@ WORKDIR /app
 COPY package.json bun.lock* ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
-RUN bun install --frozen-lockfile
+RUN bun install
 COPY packages/shared packages/shared
 COPY packages/server packages/server
 

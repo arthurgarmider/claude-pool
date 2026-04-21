@@ -61,22 +61,42 @@ export function createProxy(config: ProxyConfig) {
     const targetUrl = `${config.anthropicBaseUrl}${new URL(url).pathname}${new URL(url).search}`
 
     const fwdHeaders = new Headers(headers)
+    const isOauthToken = authToken.startsWith("sk-ant-oat")
     fwdHeaders.set("Authorization", `Bearer ${authToken}`)
-    fwdHeaders.set("x-api-key", authToken)
-    // Remove host header to avoid mismatch
+    if (isOauthToken) {
+      fwdHeaders.delete("x-api-key")
+    } else {
+      fwdHeaders.set("x-api-key", authToken)
+    }
     fwdHeaders.delete("host")
+    // Bun's fetch auto-decompresses responses; strip Accept-Encoding so
+    // Anthropic sends plain bytes that Claude Code can read directly
+    fwdHeaders.delete("accept-encoding")
 
-    return fetch(targetUrl, {
+    const upstream = await fetch(targetUrl, {
       method,
       headers: fwdHeaders,
       body: method !== "GET" && method !== "HEAD" ? body : undefined,
     })
+
+    // Bun auto-decompresses the body but may still forward Content-Encoding,
+    // which would cause the client to try decompressing already-decoded bytes
+    const resHeaders = new Headers(upstream.headers)
+    resHeaders.delete("content-encoding")
+    resHeaders.delete("transfer-encoding")
+
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: resHeaders,
+    })
   }
 
-  const server = Bun.serve({
+    const server = Bun.serve({
     port: config.port,
     hostname: "127.0.0.1",
     async fetch(req) {
+      console.log(`→ proxy ${req.method} ${new URL(req.url).pathname}`)
       config.onActivity()
 
       const originalAuth =
