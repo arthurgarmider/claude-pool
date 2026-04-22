@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "bun:test"
-import { extractTokenFromKeychain, extractToken } from "./credentials"
+import { extractTokenFromKeychain, extractToken, collectCredentials } from "./credentials"
 
 describe("extractTokenFromKeychain", () => {
   it("extracts token from macOS keychain", async () => {
@@ -30,8 +30,6 @@ describe("extractToken", () => {
     ).rejects.toThrow()
   })
 })
-
-import { collectCredentials } from "./credentials"
 
 describe("collectCredentials", () => {
   const savedEnv = process.env.ANTHROPIC_API_KEY
@@ -69,5 +67,14 @@ describe("collectCredentials", () => {
   it("ignores env values that do not start with sk-ant-api", async () => {
     process.env.ANTHROPIC_API_KEY = "not-an-anthropic-key"
     await expect(collectCredentials({ apiKeyOnly: true })).rejects.toThrow()
+  })
+
+  it("throws immediately when explicit apiKey has an invalid prefix", async () => {
+    await expect(
+      collectCredentials({
+        explicitApiKey: "sk-bogus-0000000000000000",
+        apiKeyOnly: true,
+      })
+    ).rejects.toThrow(/Invalid API key/)
   })
 })

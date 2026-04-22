@@ -63,6 +63,7 @@ export const extractTokenFromKeychain = trace(
 export const extractToken = trace(
   "extractToken",
   async (): Promise<string> => {
+    // Lenient: accept any sk-* (legacy OAuth tokens start sk-ant-oat*)
     const envKey = process.env.ANTHROPIC_API_KEY
     if (envKey?.startsWith("sk-")) return envKey
     const oauth = await readOauthFromKeychain()
@@ -91,8 +92,14 @@ export const collectCredentials = trace(
   async (opts: CollectOpts = {}): Promise<AgentCredentials> => {
     const result: AgentCredentials = {}
 
-    // API key: flag → env
-    if (opts.explicitApiKey && opts.explicitApiKey.startsWith("sk-ant-api")) {
+    // Strict: apiKey field is reserved for Anthropic API keys (sk-ant-api*).
+    if (opts.explicitApiKey) {
+      if (!opts.explicitApiKey.startsWith("sk-ant-api")) {
+        throw new Error(
+          `Invalid API key: must start with "sk-ant-api". ` +
+            `Got prefix: "${opts.explicitApiKey.slice(0, 10)}…"`
+        )
+      }
       result.apiKey = opts.explicitApiKey
     } else {
       const envKey = process.env.ANTHROPIC_API_KEY
