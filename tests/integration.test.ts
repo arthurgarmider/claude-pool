@@ -18,6 +18,7 @@ describe("integration: hardened failover + audit + cooldown + persistence", () =
     body: unknown
     headers?: Record<string, string>
   }>
+  let anthropicRequestHeaders: Array<Record<string, string>>
 
   const SERVER_PORT = 18001
   const ANTHROPIC_PORT = 18002
@@ -39,10 +40,14 @@ describe("integration: hardened failover + audit + cooldown + persistence", () =
   beforeAll(async () => {
     anthropicCallCount = 0
     anthropicResponses = []
+    anthropicRequestHeaders = []
 
     mockAnthropic = Bun.serve({
       port: ANTHROPIC_PORT,
-      fetch() {
+      fetch(req) {
+        const headers: Record<string, string> = {}
+        req.headers.forEach((v, k) => { headers[k] = v })
+        anthropicRequestHeaders.push(headers)
         const r = anthropicResponses[anthropicCallCount] || {
           status: 200,
           body: { content: "ok" },
@@ -212,5 +217,177 @@ describe("integration: hardened failover + audit + cooldown + persistence", () =
     const store5 = createStore(dbPath, createCrypto(KEY_B64))
     const app5 = createApp(store5, SECRET)
     serverHandle = Bun.serve({ port: SERVER_PORT, fetch: app5.fetch })
+  })
+
+  describe("two-credential lending", () => {
+    const SERVER_PORT_2 = 18101
+    const ANTHROPIC_PORT_2 = 18102
+    const PROXY_PORT_2 = 18103
+    const KEY_B64_2 = randomBytes(32).toString("base64")
+    const tmp2 = mkdtempSync(join(tmpdir(), "claude-pool-int2-"))
+    const dbPath2 = join(tmp2, "pool.db")
+
+    let server2: ReturnType<typeof Bun.serve>
+    let anthropic2: ReturnType<typeof Bun.serve>
+    let proxy2: ReturnType<typeof createProxy> | null = null
+    let call2Count = 0
+    let call2Headers: Array<Record<string, string>> = []
+    let call2Responses: Array<{
+      status: number
+      body: unknown
+      headers?: Record<string, string>
+    }> = []
+
+    const reqInit2 = (body: unknown) => ({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SECRET}`,
+      },
+      body: JSON.stringify(body),
+    })
+
+    beforeAll(async () => {
+      anthropic2 = Bun.serve({
+        port: ANTHROPIC_PORT_2,
+        fetch(req) {
+          const h: Record<string, string> = {}
+          req.headers.forEach((v, k) => { h[k] = v })
+          call2Headers.push(h)
+          const r = call2Responses[call2Count] || { status: 200, body: { content: "ok" } }
+          call2Count++
+          return new Response(JSON.stringify(r.body), {
+            status: r.status,
+            headers: { "Content-Type": "application/json", ...(r.headers ?? {}) },
+          })
+        },
+      })
+      const store = createStore(dbPath2, createCrypto(KEY_B64_2))
+      const app = createApp(store, SECRET)
+      server2 = Bun.serve({ port: SERVER_PORT_2, fetch: app.fetch })
+    })
+
+    afterAll(() => {
+      proxy2?.stop()
+      server2?.stop()
+      anthropic2?.stop()
+      rmSync(tmp2, { recursive: true, force: true })
+    })
+
+    const registerPair = async (
+      lenderAgent: string, lenderUser: string, lenderCreds: { apiKey?: string; oauthToken?: string },
+      borrowerAgent: string, borrowerUser: string, borrowerCreds: { apiKey?: string; oauthToken?: string }
+    ) => {
+      await fetch(`http://localhost:${SERVER_PORT_2}/agents/register`,
+        reqInit2({ agentId: lenderAgent, userId: lenderUser, ...lenderCreds }))
+      await fetch(`http://localhost:${SERVER_PORT_2}/agents/register`,
+        reqInit2({ agentId: borrowerAgent, userId: borrowerUser, ...borrowerCreds }))
+      await fetch(`http://localhost:${SERVER_PORT_2}/agents/heartbeat`,
+        reqInit2({ agentId: lenderAgent, status: "idle", lastActivityAt: 0, credentialValid: true }))
+      await fetch(`http://localhost:${SERVER_PORT_2}/agents/heartbeat`,
+        reqInit2({ agentId: borrowerAgent, status: "active", lastActivityAt: Date.now(), credentialValid: true }))
+    }
+
+    const forceBorrow = async (borrowerAgent: string, ownAuthToken: string) => {
+      proxy2?.stop()
+      proxy2 = createProxy({
+        port: PROXY_PORT_2,
+        anthropicBaseUrl: `http://localhost:${ANTHROPIC_PORT_2}`,
+        serverUrl: `http://localhost:${SERVER_PORT_2}`,
+        serverSecret: SECRET,
+        maxRetries: 3,
+        onActivity: () => {},
+      })
+      const res = await fetch(`http://localhost:${PROXY_PORT_2}/v1/messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ownAuthToken}`,
+          "Content-Type": "application/json",
+          "X-Claude-Pool-Agent-Id": borrowerAgent,
+        },
+        body: JSON.stringify({ model: "claude-sonnet-4-5-20250514" }),
+      })
+      return res
+    }
+
+    it("pure API-key pool: borrowed credential is sent with x-api-key, no Bearer OAuth", async () => {
+      call2Count = 0; call2Headers = []
+      call2Responses = [
+        { status: 429, body: { error: "rl" }, headers: { "Retry-After": "5" } }, // own 429
+        { status: 200, body: { content: "via alice api" } },                     // borrowed
+      ]
+      await registerPair(
+        "alice-api", "alice", { apiKey: "sk-ant-api-alice-0000000000000000" },
+        "bob-api",   "bob",   { apiKey: "sk-ant-api-bob-bbbbbbbbbbbbbbbb" },
+      )
+      const res = await forceBorrow("bob-api", "sk-ant-api-bob-bbbbbbbbbbbbbbbb")
+      expect(res.status).toBe(200)
+      await Bun.sleep(50)
+
+      // Second upstream call (index 1) is the borrowed one.
+      const borrowed = call2Headers[1]
+      expect(borrowed["x-api-key"]).toBe("sk-ant-api-alice-0000000000000000")
+      expect(borrowed["authorization"]).toBe("Bearer sk-ant-api-alice-0000000000000000")
+    })
+
+    it("pure OAuth pool (regression): borrowed credential sent with Bearer, no x-api-key", async () => {
+      call2Count = 0; call2Headers = []
+      call2Responses = [
+        { status: 429, body: { error: "rl" }, headers: { "Retry-After": "5" } },
+        { status: 200, body: { content: "via carol oauth" } },
+      ]
+      await registerPair(
+        "carol-oauth", "carol", { oauthToken: "sk-ant-oat01-carol-ccccccccccccccc" },
+        "dave-oauth",  "dave",  { oauthToken: "sk-ant-oat01-dave-ddddddddddddddd"  },
+      )
+      const res = await forceBorrow("dave-oauth", "sk-ant-oat01-dave-ddddddddddddddd")
+      expect(res.status).toBe(200)
+      await Bun.sleep(50)
+
+      const borrowed = call2Headers[1]
+      expect(borrowed["authorization"]).toBe("Bearer sk-ant-oat01-carol-ccccccccccccccc")
+      expect(borrowed["x-api-key"]).toBeUndefined()
+    })
+
+    it("mixed pool, preference: lender has both → borrower gets the API key", async () => {
+      call2Count = 0; call2Headers = []
+      call2Responses = [
+        { status: 429, body: { error: "rl" }, headers: { "Retry-After": "5" } },
+        { status: 200, body: { content: "preferred api" } },
+      ]
+      await registerPair(
+        "eve-both", "eve",
+        {
+          apiKey: "sk-ant-api-eve-eeeeeeeeeeeeeeeeee",
+          oauthToken: "sk-ant-oat01-eve-eeeeeeeeeeeeeeee",
+        },
+        "frank", "frank", { apiKey: "sk-ant-api-frank-ffffffffffffffff" },
+      )
+      const res = await forceBorrow("frank", "sk-ant-api-frank-ffffffffffffffff")
+      expect(res.status).toBe(200)
+      await Bun.sleep(50)
+
+      const borrowed = call2Headers[1]
+      expect(borrowed["x-api-key"]).toBe("sk-ant-api-eve-eeeeeeeeeeeeeeeeee")
+    })
+
+    it("mixed pool, fallback: lender has only OAuth → borrower gets OAuth", async () => {
+      call2Count = 0; call2Headers = []
+      call2Responses = [
+        { status: 429, body: { error: "rl" }, headers: { "Retry-After": "5" } },
+        { status: 200, body: { content: "fallback oauth" } },
+      ]
+      await registerPair(
+        "grace-oauth-only", "grace", { oauthToken: "sk-ant-oat01-grace-gggggggggggggg" },
+        "heidi-api",        "heidi", { apiKey:     "sk-ant-api-heidi-hhhhhhhhhhhhhh" },
+      )
+      const res = await forceBorrow("heidi-api", "sk-ant-api-heidi-hhhhhhhhhhhhhh")
+      expect(res.status).toBe(200)
+      await Bun.sleep(50)
+
+      const borrowed = call2Headers[1]
+      expect(borrowed["authorization"]).toBe("Bearer sk-ant-oat01-grace-gggggggggggggg")
+      expect(borrowed["x-api-key"]).toBeUndefined()
+    })
   })
 })
