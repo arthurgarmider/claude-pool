@@ -4,34 +4,27 @@ Transparent rate-limit failover for Claude Code. When you hit a 429, claude-pool
 
 ## Status & scope
 
-This project is in **early development** and currently targets a single use case: **a small, trusted group sharing the load across credentials they all consent to share.** Read the section below before you deploy it.
+This project is in **early development** but has a ToS-clean primary deployment mode:
 
-### About credential sharing and Anthropic's terms
+- **API-key mode (default, recommended).** Every pool member registers an Anthropic API key they legitimately own — personal keys, org/team keys, Workspaces keys. The pool distributes load across keys the operator and members already have the right to use. This is load-balancing across your own keys, not credential sharing, and fits cleanly within the standard Anthropic API terms.
+- **OAuth mode (experimental, ToS risk).** The agent can also register a Claude Code OAuth token extracted from the macOS Keychain. Pooling **personal Claude Code OAuth tokens** across users may violate Anthropic's [Usage Policy](https://www.anthropic.com/legal/usage-policy) and the Claude Code terms, which generally treat personal credentials as non-transferable. **Using claude-pool with personal Claude Code tokens across multiple users may violate those terms and put the underlying Anthropic accounts at risk of suspension or termination.**
 
-The current implementation pools **personal Claude Code OAuth tokens**. Anthropic's [Usage Policy](https://www.anthropic.com/legal/usage-policy) and the Claude Code terms generally treat personal credentials as non-transferable and prohibit sharing them across users to circumvent rate limits. **Using claude-pool with personal Claude Code tokens across multiple users may violate those terms and put the underlying Anthropic accounts at risk of suspension or termination.**
-
-You should only run claude-pool today if at least one of these is true:
+You should only use OAuth mode today if at least one of these is true:
 
 - **You are the sole human user** and you are pooling credentials across machines that all belong to you (multi-device personal use).
 - **Every credential owner in the pool has read this section and explicitly consented** to their token being used by other pool members, understanding the account-risk implications.
 - **You have written confirmation from Anthropic** that your specific use case is acceptable.
 
-If none of those are true, do not use this software.
-
 A README cannot grant permission Anthropic hasn't given. This section exists to make sure you go in with full information, not to transfer responsibility to you.
-
-### Roadmap toward a non-risky deployment mode
-
-The architecture (proxy, lease manager, cooldown handling, audit log) is independent of the credential type. The intended next milestone is **API key mode**, where the pool distributes load across Anthropic API keys that the operator owns (org/team keys, Workspaces, etc.). Load-balancing across keys you legitimately own is not credential sharing and should fit cleanly within the standard API terms. Track or contribute via the issues.
-
----
 
 ## How it works
 
 1. Every pool member installs an **agent** on their Mac
 2. The agent runs a local reverse proxy that Claude Code talks through
-3. A lightweight **server** tracks who is active and who is idle, holds encrypted tokens at rest, and arbitrates leases
+3. A lightweight **server** tracks who is active and who is idle, holds encrypted credentials at rest, and arbitrates leases
 4. When the proxy sees a 429, it borrows an idle credential from the server, retries, and benches the rate-limited credential for the duration the upstream asked for
+
+When a lender has both an API key and an OAuth token registered, the server prefers the API key when lending.
 
 ## Quick Start
 
@@ -47,19 +40,30 @@ docker run -d \
 ```
 
 `ENCRYPTION_KEY` (32 raw bytes, base64) is required. It encrypts every agent's
-Claude Code token at rest using AES-256-GCM. **Store this key separately from
-the database file** — anyone with both can decrypt every teammate's token.
+credentials at rest using AES-256-GCM. **Store this key separately from
+the database file** — anyone with both can decrypt every teammate's credentials.
 
 If you ever lose the key, teammates re-register via `claude-pool init`; old
 ciphertext rows are skipped silently on acquire.
 
-### Agent (each developer)
+### Agent — API-key mode (recommended)
 
 ```bash
 bun install -g @claude-pool/agent
-claude-pool init     # enter server URL + secret
-claude-pool start    # starts the agent daemon
+export ANTHROPIC_API_KEY=sk-ant-api-…
+claude-pool init            # picks up ANTHROPIC_API_KEY from env
+claude-pool start           # starts the agent daemon
 ```
+
+Alternatively, pass the key explicitly and skip the Claude Code keychain read entirely:
+
+```bash
+claude-pool init --api-key-only --api-key sk-ant-api-…
+```
+
+### Agent — Hybrid / OAuth setup
+
+If you also want your local Claude Code OAuth token registered (so others in an OAuth-consenting pool can borrow it), just run `claude-pool init` without `--api-key-only`. The agent will pick up whichever of `ANTHROPIC_API_KEY` / Claude Code keychain are available and register both.
 
 ### Commands
 
