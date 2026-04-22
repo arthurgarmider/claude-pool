@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Bun
+.bun/
+
+# Runtime artifacts (local SQLite DB, WAL/SHM sidecars, packaged zips)
+*.db
+*.db-shm
+*.db-wal
+*.zip
+
+# Logs
+*.log
+logs/
+
+# Environment files (never commit secrets)
+.env
+.env.local
+.env.*.local
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage / test output
+coverage/
+.nyc_output/
+
+# Internal planning & design docs (kept locally, not published)
+docs/superpowers/
