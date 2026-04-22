@@ -6,11 +6,28 @@ export type AgentStatus = "active" | "idle" | "offline"
 
 // --- API Payloads ---
 
-export const RegisterPayloadSchema = z.object({
-  agentId: z.string().min(1),
-  userId: z.string().min(1),
-  token: z.string().min(1),
-})
+// Credentials are optional per-field on the wire:
+//   - field absent      → preserve existing column in DB
+//   - field === ""      → clear that column in DB
+//   - field === "sk-…"  → set/replace that column
+// The store enforces "at least one non-null credential per row post-update".
+// Here we only enforce "the payload is not completely empty of creds" — which
+// catches a brand-new INSERT that would immediately violate the invariant.
+const CredentialField = z
+  .union([z.string().min(20), z.literal("")])
+  .optional()
+
+export const RegisterPayloadSchema = z
+  .object({
+    agentId: z.string().min(1),
+    userId: z.string().min(1),
+    apiKey: CredentialField,
+    oauthToken: CredentialField,
+  })
+  .refine(
+    (p) => p.apiKey !== undefined || p.oauthToken !== undefined,
+    { message: "at least one of apiKey or oauthToken must be present" }
+  )
 export type RegisterPayload = z.infer<typeof RegisterPayloadSchema>
 
 export const HeartbeatPayloadSchema = z.object({
