@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test"
+import { describe, it, expect, afterEach } from "bun:test"
 import { extractTokenFromKeychain, extractToken } from "./credentials"
 
 describe("extractTokenFromKeychain", () => {
@@ -28,5 +28,46 @@ describe("extractToken", () => {
     expect(
       extractTokenFromKeychain("nonexistent-service-12345")
     ).rejects.toThrow()
+  })
+})
+
+import { collectCredentials } from "./credentials"
+
+describe("collectCredentials", () => {
+  const savedEnv = process.env.ANTHROPIC_API_KEY
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.ANTHROPIC_API_KEY
+    else process.env.ANTHROPIC_API_KEY = savedEnv
+  })
+
+  it("returns {apiKey} from explicit flag, ignoring env + keychain", async () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api-env-value-00000000000000"
+    const creds = await collectCredentials({
+      explicitApiKey: "sk-ant-api-flag-value-0000000000000",
+      apiKeyOnly: true, // ensure keychain is skipped in this environment
+    })
+    expect(creds.apiKey).toBe("sk-ant-api-flag-value-0000000000000")
+    expect(creds.oauthToken).toBeUndefined()
+  })
+
+  it("returns {apiKey} from env when no flag given, with apiKeyOnly=true (no keychain)", async () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api-env-value-00000000000000"
+    const creds = await collectCredentials({ apiKeyOnly: true })
+    expect(creds.apiKey).toBe("sk-ant-api-env-value-00000000000000")
+    expect(creds.oauthToken).toBeUndefined()
+  })
+
+  it("throws with a clear message when nothing is available", async () => {
+    delete process.env.ANTHROPIC_API_KEY
+    // apiKeyOnly=true means keychain is not even attempted, so if env is
+    // missing the function must throw with the user-facing error.
+    await expect(collectCredentials({ apiKeyOnly: true })).rejects.toThrow(
+      /ANTHROPIC_API_KEY|Claude Code/
+    )
+  })
+
+  it("ignores env values that do not start with sk-ant-api", async () => {
+    process.env.ANTHROPIC_API_KEY = "not-an-anthropic-key"
+    await expect(collectCredentials({ apiKeyOnly: true })).rejects.toThrow()
   })
 })
