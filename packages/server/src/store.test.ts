@@ -16,21 +16,19 @@ describe("store", () => {
 
   describe("agents", () => {
     it("registers an agent and stores ciphertext (not plaintext)", () => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
       const row = store.db
-        .query("SELECT tokenCiphertext, tokenNonce FROM agents WHERE agentId=?")
-        .get("a1") as { tokenCiphertext: Uint8Array; tokenNonce: Uint8Array }
-      // bun:sqlite returns BLOBs as Uint8Array (Buffer is a Node-only subclass)
-      expect(row.tokenCiphertext).toBeInstanceOf(Uint8Array)
-      expect(row.tokenNonce).toBeInstanceOf(Uint8Array)
-      // raw bytes must not contain the plaintext substring
-      expect(Buffer.from(row.tokenCiphertext).toString("utf8")).not.toContain(
+        .query("SELECT oauthCiphertext, oauthNonce FROM agents WHERE agentId=?")
+        .get("a1") as { oauthCiphertext: Uint8Array; oauthNonce: Uint8Array }
+      expect(row.oauthCiphertext).toBeInstanceOf(Uint8Array)
+      expect(row.oauthNonce).toBeInstanceOf(Uint8Array)
+      expect(Buffer.from(row.oauthCiphertext).toString("utf8")).not.toContain(
         "tok-alice"
       )
     })
 
     it("listAgents returns AgentRecord without a token field", () => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
       const agents = store.listAgents()
       expect(agents).toHaveLength(1)
       expect(agents[0].agentId).toBe("a1")
@@ -42,10 +40,10 @@ describe("store", () => {
     })
 
     it("overwrites credentials on re-register (decryption returns new token)", () => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-old" })
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-new" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-old" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-new" })
       // a2 needs to exist as a borrower so acquire can return a1's token
-      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.registerAgent({ agentId: "a2", userId: "bob", oauthToken: "tok-bob" })
       store.heartbeat({
         agentId: "a1",
         status: "idle",
@@ -57,7 +55,7 @@ describe("store", () => {
     })
 
     it("updates status via heartbeat", () => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
       store.heartbeat({
         agentId: "a1",
         status: "active",
@@ -69,7 +67,7 @@ describe("store", () => {
 
     it("marks agents offline after timeout", () => {
       const old = Date.now() - 4 * 60 * 1000
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
       store.heartbeat({
         agentId: "a1",
         status: "active",
@@ -85,8 +83,8 @@ describe("store", () => {
     })
 
     it("removes an agent (cascades leases)", () => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
-      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", oauthToken: "tok-bob" })
       store.heartbeat({
         agentId: "a1",
         status: "idle",
@@ -154,14 +152,15 @@ describe("store", () => {
       // open via createStore — should migrate
       const migrated = createStore(path, crypto)
 
-      // plaintext token column is gone
       const cols = migrated.db
         .query("PRAGMA table_info(agents)")
         .all() as Array<{ name: string }>
       const colNames = cols.map((c) => c.name)
       expect(colNames).not.toContain("token")
-      expect(colNames).toContain("tokenCiphertext")
-      expect(colNames).toContain("tokenNonce")
+      expect(colNames).not.toContain("tokenCiphertext") // dropped by 2026-04-22 migration
+      expect(colNames).not.toContain("tokenNonce")
+      expect(colNames).toContain("apiKeyCiphertext")
+      expect(colNames).toContain("oauthCiphertext")
       expect(colNames).toContain("cooldownUntil")
 
       // new lease columns exist
@@ -188,12 +187,150 @@ describe("store", () => {
 
       migrated.db.close()
     })
+
+    it("migrates a v2 DB (single tokenCiphertext column): api/oauth rows land in the right new columns", () => {
+      const path = `/tmp/claude-pool-mig-v2-${Date.now()}.db`
+      // seed the v2 schema (post-hardening, pre-api-key-mode) with pre-encrypted
+      // blobs by doing a normal write through a createStore instance that uses
+      // the v2 DDL. The simplest way to get a v2 DB is to construct the columns
+      // by hand and run the intermediate migration, then let our code finish.
+      const old = new Database(path)
+      old.exec(`
+        CREATE TABLE agents (
+          agentId TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          tokenCiphertext BLOB,
+          tokenNonce BLOB,
+          status TEXT NOT NULL DEFAULT 'idle',
+          registeredAt INTEGER NOT NULL,
+          lastHeartbeatAt INTEGER NOT NULL,
+          lastActivityAt INTEGER NOT NULL DEFAULT 0,
+          cooldownUntil INTEGER
+        );
+        CREATE TABLE leases (
+          id TEXT PRIMARY KEY,
+          credentialAgentId TEXT NOT NULL,
+          leasedTo TEXT NOT NULL,
+          leasedAt INTEGER NOT NULL,
+          ttl INTEGER NOT NULL,
+          releasedAt INTEGER,
+          requestCount INTEGER NOT NULL DEFAULT 0,
+          closedReason TEXT
+        );
+      `)
+      const now = Date.now()
+
+      // encrypt fake plaintexts with the same crypto the test uses
+      const api = crypto.encryptToken("sk-ant-api-migrated-key-0000000000")
+      const oauth = crypto.encryptToken("sk-ant-oat01-migrated-token-0000000")
+      old.run(
+        `INSERT INTO agents
+           (agentId, userId, tokenCiphertext, tokenNonce, status, registeredAt,
+            lastHeartbeatAt, lastActivityAt, cooldownUntil)
+         VALUES (?, ?, ?, ?, 'idle', ?, ?, 0, NULL)`,
+        ["a-api", "alice", api.ciphertext, api.nonce, now, now]
+      )
+      old.run(
+        `INSERT INTO agents
+           (agentId, userId, tokenCiphertext, tokenNonce, status, registeredAt,
+            lastHeartbeatAt, lastActivityAt, cooldownUntil)
+         VALUES (?, ?, ?, ?, 'idle', ?, ?, 0, NULL)`,
+        ["a-oauth", "bob", oauth.ciphertext, oauth.nonce, now, now]
+      )
+      old.close()
+
+      const migrated = createStore(path, crypto)
+
+      const cols = migrated.db
+        .query("PRAGMA table_info(agents)")
+        .all() as Array<{ name: string }>
+      const colNames = cols.map((c) => c.name)
+      expect(colNames).not.toContain("tokenCiphertext")
+      expect(colNames).not.toContain("tokenNonce")
+      expect(colNames).toContain("apiKeyCiphertext")
+      expect(colNames).toContain("oauthCiphertext")
+
+      // a-api: apiKey column populated, oauth NULL
+      const apiRow = migrated.db
+        .query(
+          `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                  oauthCiphertext  IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = 'a-api'`
+        )
+        .get() as { hasApi: number; hasOauth: number }
+      expect(apiRow.hasApi).toBe(1)
+      expect(apiRow.hasOauth).toBe(0)
+
+      // a-oauth: mirror
+      const oauthRow = migrated.db
+        .query(
+          `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                  oauthCiphertext  IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = 'a-oauth'`
+        )
+        .get() as { hasApi: number; hasOauth: number }
+      expect(oauthRow.hasApi).toBe(0)
+      expect(oauthRow.hasOauth).toBe(1)
+
+      migrated.db.close()
+    })
+
+    it("migration with wrong key: row ends up with both new columns NULL (no crash)", () => {
+      const path = `/tmp/claude-pool-mig-wrongkey-${Date.now()}.db`
+      const other = createCrypto(randomBytes(32).toString("base64"))
+      const old = new Database(path)
+      old.exec(`
+        CREATE TABLE agents (
+          agentId TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          tokenCiphertext BLOB,
+          tokenNonce BLOB,
+          status TEXT NOT NULL DEFAULT 'idle',
+          registeredAt INTEGER NOT NULL,
+          lastHeartbeatAt INTEGER NOT NULL,
+          lastActivityAt INTEGER NOT NULL DEFAULT 0,
+          cooldownUntil INTEGER
+        );
+        CREATE TABLE leases (
+          id TEXT PRIMARY KEY,
+          credentialAgentId TEXT NOT NULL,
+          leasedTo TEXT NOT NULL,
+          leasedAt INTEGER NOT NULL,
+          ttl INTEGER NOT NULL,
+          releasedAt INTEGER,
+          requestCount INTEGER NOT NULL DEFAULT 0,
+          closedReason TEXT
+        );
+      `)
+      const now = Date.now()
+      const blob = other.encryptToken("sk-ant-api-encrypted-under-other-key")
+      old.run(
+        `INSERT INTO agents
+           (agentId, userId, tokenCiphertext, tokenNonce, status, registeredAt,
+            lastHeartbeatAt, lastActivityAt, cooldownUntil)
+         VALUES (?, ?, ?, ?, 'idle', ?, ?, 0, NULL)`,
+        ["a1", "alice", blob.ciphertext, blob.nonce, now, now]
+      )
+      old.close()
+
+      const migrated = createStore(path, crypto) // wrong key
+      const row = migrated.db
+        .query(
+          `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                  oauthCiphertext  IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = 'a1'`
+        )
+        .get() as { hasApi: number; hasOauth: number }
+      expect(row.hasApi).toBe(0)
+      expect(row.hasOauth).toBe(0)
+      migrated.db.close()
+    })
   })
 
   describe("leases (acquire)", () => {
     beforeEach(() => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
-      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", oauthToken: "tok-bob" })
       store.heartbeat({
         agentId: "a1",
         status: "idle",
@@ -245,7 +382,7 @@ describe("store", () => {
     })
 
     it("prefers longest-idle agent", () => {
-      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.registerAgent({ agentId: "a3", userId: "carol", oauthToken: "tok-carol" })
       store.heartbeat({
         agentId: "a3",
         status: "idle",
@@ -258,7 +395,7 @@ describe("store", () => {
 
     it("falls back to already-leased credential when all idle are leased", () => {
       store.acquireCredential("a2") // takes a1
-      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.registerAgent({ agentId: "a3", userId: "carol", oauthToken: "tok-carol" })
       store.heartbeat({
         agentId: "a3",
         status: "active",
@@ -278,8 +415,8 @@ describe("store", () => {
       // primary-then-fallback serialization rather than true concurrent execution.
       // The transactional wrapper protects against multi-connection races
       // (see the comment in store.ts:acquireCredential).
-      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
-      store.registerAgent({ agentId: "a4", userId: "dave", token: "tok-dave" })
+      store.registerAgent({ agentId: "a3", userId: "carol", oauthToken: "tok-carol" })
+      store.registerAgent({ agentId: "a4", userId: "dave", oauthToken: "tok-dave" })
       store.heartbeat({
         agentId: "a3",
         status: "active",
@@ -307,13 +444,13 @@ describe("store", () => {
       // simulate a row encrypted under a different key by overwriting
       // a1's ciphertext bytes with garbage that will fail GCM auth.
       store.db.run(
-        "UPDATE agents SET tokenCiphertext = ?, tokenNonce = ? WHERE agentId = ?",
+        "UPDATE agents SET oauthCiphertext = ?, oauthNonce = ? WHERE agentId = ?",
         [Buffer.alloc(48, 0xff), Buffer.alloc(12, 0xff), "a1"]
       )
       // a3 is registered as a NEWER idle candidate than a1 (a1 is 20 min old
       // from beforeEach). Ordering is `lastActivityAt ASC`, so a1 is tried
       // first, its decrypt throws, and the loop falls through to a3.
-      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.registerAgent({ agentId: "a3", userId: "carol", oauthToken: "tok-carol" })
       store.heartbeat({
         agentId: "a3",
         status: "idle",
@@ -327,8 +464,8 @@ describe("store", () => {
 
   describe("leases (release/expire)", () => {
     beforeEach(() => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
-      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", oauthToken: "tok-bob" })
       store.heartbeat({
         agentId: "a1",
         status: "idle",
@@ -421,8 +558,8 @@ describe("store", () => {
 
   describe("cooldown", () => {
     beforeEach(() => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
-      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", oauthToken: "tok-bob" })
       store.heartbeat({
         agentId: "a1",
         status: "idle",
@@ -467,7 +604,7 @@ describe("store", () => {
 
     it("acquireCredential skips cooldowned lenders even on the fallback path", () => {
       // a3 is also idle; a1 cooldowned, so a3 should be picked
-      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.registerAgent({ agentId: "a3", userId: "carol", oauthToken: "tok-carol" })
       store.heartbeat({
         agentId: "a3",
         status: "idle",
@@ -478,7 +615,7 @@ describe("store", () => {
       // pre-lease a3 to force the fallback path
       store.acquireCredential("a2") // takes a3 (a1 cooldowned)
       // another borrower should fall back to sharing a3, never picking a1
-      store.registerAgent({ agentId: "a4", userId: "dave", token: "tok-dave" })
+      store.registerAgent({ agentId: "a4", userId: "dave", oauthToken: "tok-dave" })
       store.heartbeat({
         agentId: "a4",
         status: "active",
@@ -510,9 +647,9 @@ describe("store", () => {
 
   describe("listAudit", () => {
     beforeEach(() => {
-      store.registerAgent({ agentId: "a1", userId: "alice", token: "tok-alice" })
-      store.registerAgent({ agentId: "a2", userId: "bob", token: "tok-bob" })
-      store.registerAgent({ agentId: "a3", userId: "carol", token: "tok-carol" })
+      store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "tok-alice" })
+      store.registerAgent({ agentId: "a2", userId: "bob", oauthToken: "tok-bob" })
+      store.registerAgent({ agentId: "a3", userId: "carol", oauthToken: "tok-carol" })
       store.heartbeat({
         agentId: "a1",
         status: "idle",
@@ -582,6 +719,213 @@ describe("store", () => {
       const entries = store.listAudit({})
       expect(entries[0].leaseId).toBe(second.leaseId)
       expect(entries[1].leaseId).toBe(first.leaseId)
+    })
+  })
+
+  describe("two-credential registration", () => {
+    it("registers with apiKey only → apiKey columns set, oauth columns NULL", () => {
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        apiKey: "sk-ant-api-key-12345678901234567890",
+      })
+      const row = store.db
+        .query(
+          `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                  oauthCiphertext  IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = ?`
+        )
+        .get("a1") as { hasApi: number; hasOauth: number }
+      expect(row.hasApi).toBe(1)
+      expect(row.hasOauth).toBe(0)
+    })
+
+    it("registers with oauthToken only → oauth columns set, apiKey columns NULL", () => {
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        oauthToken: "sk-ant-oat01-abcdefghijklmnopqrst",
+      })
+      const row = store.db
+        .query(
+          `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                  oauthCiphertext  IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = ?`
+        )
+        .get("a1") as { hasApi: number; hasOauth: number }
+      expect(row.hasApi).toBe(0)
+      expect(row.hasOauth).toBe(1)
+    })
+
+    it("registers with both → both columns set", () => {
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        apiKey: "sk-ant-api-key-12345678901234567890",
+        oauthToken: "sk-ant-oat01-abcdefghijklmnopqrst",
+      })
+      const row = store.db
+        .query(
+          `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                  oauthCiphertext  IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = ?`
+        )
+        .get("a1") as { hasApi: number; hasOauth: number }
+      expect(row.hasApi).toBe(1)
+      expect(row.hasOauth).toBe(1)
+    })
+
+    it("rejects registration with no credentials at all", () => {
+      expect(() =>
+        store.registerAgent({ agentId: "a1", userId: "alice" })
+      ).toThrow(/at least one/)
+    })
+
+    it("re-register with only oauthToken preserves existing apiKey column", () => {
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        apiKey: "sk-ant-api-original-12345678901234",
+        oauthToken: "sk-ant-oat01-original-0000000000",
+      })
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        oauthToken: "sk-ant-oat01-replacement-111111",
+      })
+      // apiKey column untouched; oauth column updated
+      store.registerAgent({
+        agentId: "a2",
+        userId: "bob",
+        oauthToken: "sk-ant-oat01-bob-0000000000000",
+      })
+      store.heartbeat({
+        agentId: "a1",
+        status: "idle",
+        lastActivityAt: Date.now() - 60_000,
+        credentialValid: true,
+      })
+      // Acquire from a1: preference → apiKey (preserved, original value)
+      const result = store.acquireCredential("a2")!
+      expect(result.token).toBe("sk-ant-api-original-12345678901234")
+    })
+
+    it("re-register with apiKey='' clears the apiKey column", () => {
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        apiKey: "sk-ant-api-original-12345678901234",
+        oauthToken: "sk-ant-oat01-original-0000000000",
+      })
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        apiKey: "",
+      })
+      const row = store.db
+        .query(
+          `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                  oauthCiphertext  IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = ?`
+        )
+        .get("a1") as { hasApi: number; hasOauth: number }
+      expect(row.hasApi).toBe(0)
+      expect(row.hasOauth).toBe(1)
+    })
+
+    it("re-register that would leave row with no credentials is rejected", () => {
+      store.registerAgent({
+        agentId: "a1",
+        userId: "alice",
+        oauthToken: "sk-ant-oat01-original-0000000000",
+      })
+      expect(() =>
+        store.registerAgent({ agentId: "a1", userId: "alice", oauthToken: "" })
+      ).toThrow(/at least one/)
+      // row should still have the original oauth credential
+      const row = store.db
+        .query(
+          `SELECT oauthCiphertext IS NOT NULL AS hasOauth
+             FROM agents WHERE agentId = ?`
+        )
+        .get("a1") as { hasOauth: number }
+      expect(row.hasOauth).toBe(1)
+    })
+  })
+
+  describe("two-credential acquire preference", () => {
+    beforeEach(() => {
+      store.registerAgent({
+        agentId: "lender",
+        userId: "alice",
+        apiKey: "sk-ant-api-pref-1234567890abcdefgh",
+        oauthToken: "sk-ant-oat01-pref-1234567890abcdef",
+      })
+      store.registerAgent({
+        agentId: "borrower",
+        userId: "bob",
+        oauthToken: "sk-ant-oat01-bob-00000000000000",
+      })
+      store.heartbeat({
+        agentId: "lender",
+        status: "idle",
+        lastActivityAt: Date.now() - 60_000,
+        credentialValid: true,
+      })
+    })
+
+    it("returns lender's apiKey when both credentials are present", () => {
+      const result = store.acquireCredential("borrower")!
+      expect(result.token).toBe("sk-ant-api-pref-1234567890abcdefgh")
+    })
+
+    it("falls back to oauth when apiKey column is NULL", () => {
+      store.db.run(
+        "UPDATE agents SET apiKeyCiphertext = NULL, apiKeyNonce = NULL WHERE agentId = ?",
+        ["lender"]
+      )
+      const result = store.acquireCredential("borrower")!
+      expect(result.token).toBe("sk-ant-oat01-pref-1234567890abcdef")
+    })
+
+    it("skips lender whose apiKey decrypts but oauth decryption fails (and vice versa)", () => {
+      // corrupt apiKey column → preference fails → fall through to oauth
+      store.db.run(
+        `UPDATE agents SET apiKeyCiphertext = ?, apiKeyNonce = ? WHERE agentId = ?`,
+        [Buffer.alloc(48, 0xff), Buffer.alloc(12, 0xff), "lender"]
+      )
+      const result = store.acquireCredential("borrower")!
+      expect(result.token).toBe("sk-ant-oat01-pref-1234567890abcdef")
+    })
+
+    it("skips lender whose both columns fail to decrypt, moves to next lender", () => {
+      store.registerAgent({
+        agentId: "other",
+        userId: "carol",
+        oauthToken: "sk-ant-oat01-carol-0000000000000",
+      })
+      store.heartbeat({
+        agentId: "other",
+        status: "idle",
+        lastActivityAt: Date.now() - 10 * 60 * 1000,
+        credentialValid: true,
+      })
+      // corrupt both on lender (which is older → picked first)
+      store.db.run(
+        `UPDATE agents
+           SET apiKeyCiphertext = ?, apiKeyNonce = ?,
+               oauthCiphertext  = ?, oauthNonce  = ?
+         WHERE agentId = ?`,
+        [
+          Buffer.alloc(48, 0xff),
+          Buffer.alloc(12, 0xff),
+          Buffer.alloc(48, 0xff),
+          Buffer.alloc(12, 0xff),
+          "lender",
+        ]
+      )
+      const result = store.acquireCredential("borrower")!
+      expect(result.token).toBe("sk-ant-oat01-carol-0000000000000")
     })
   })
 })

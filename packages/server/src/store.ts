@@ -17,8 +17,10 @@ export function createStore(dbPath: string, crypto: Crypto) {
     CREATE TABLE IF NOT EXISTS agents (
       agentId TEXT PRIMARY KEY,
       userId TEXT NOT NULL,
-      tokenCiphertext BLOB,
-      tokenNonce BLOB,
+      apiKeyCiphertext BLOB,
+      apiKeyNonce BLOB,
+      oauthCiphertext BLOB,
+      oauthNonce BLOB,
       status TEXT NOT NULL DEFAULT 'idle',
       registeredAt INTEGER NOT NULL,
       lastHeartbeatAt INTEGER NOT NULL,
@@ -55,21 +57,96 @@ export function createStore(dbPath: string, crypto: Crypto) {
 
   const registerAgent = traceQuiet(
     "store.registerAgent",
-    (payload: { agentId: string; userId: string; token: string }) => {
+    (payload: {
+      agentId: string
+      userId: string
+      apiKey?: string
+      oauthToken?: string
+    }) => {
       const now = Date.now()
-      const { ciphertext, nonce } = crypto.encryptToken(payload.token)
-      db.run(
-        `INSERT INTO agents (agentId, userId, tokenCiphertext, tokenNonce, status,
-                             registeredAt, lastHeartbeatAt, lastActivityAt, cooldownUntil)
-         VALUES (?, ?, ?, ?, 'idle', ?, ?, 0, NULL)
-         ON CONFLICT(agentId) DO UPDATE SET
-           userId = excluded.userId,
-           tokenCiphertext = excluded.tokenCiphertext,
-           tokenNonce = excluded.tokenNonce,
-           registeredAt = excluded.registeredAt,
-           lastHeartbeatAt = excluded.lastHeartbeatAt`,
-        [payload.agentId, payload.userId, ciphertext, nonce, now, now]
-      )
+
+      // Encode each field's intent into "(ciphertext, nonce, shouldWrite)".
+      //   undefined  → no SET clause (preserve existing)
+      //   ""         → SET to NULL (clear)
+      //   "sk-…"     → SET to encrypted bytes (replace)
+      const encodeCred = (v: string | undefined):
+        | { write: false }
+        | { write: true; ct: Buffer | null; nonce: Buffer | null } => {
+        if (v === undefined) return { write: false }
+        if (v === "") return { write: true, ct: null, nonce: null }
+        const { ciphertext, nonce } = crypto.encryptToken(v)
+        return { write: true, ct: ciphertext, nonce }
+      }
+
+      const apiCol = encodeCred(payload.apiKey)
+      const oauthCol = encodeCred(payload.oauthToken)
+
+      db.transaction(() => {
+        // INSERT-or-UPDATE. For the INSERT branch we must populate NOT-NULL
+        // housekeeping columns + whichever of the four credential columns the
+        // payload touches; unset ones go in as NULL (enforced by the
+        // post-update invariant check below).
+        const insertApiCt = apiCol.write ? apiCol.ct : null
+        const insertApiNonce = apiCol.write ? apiCol.nonce : null
+        const insertOauthCt = oauthCol.write ? oauthCol.ct : null
+        const insertOauthNonce = oauthCol.write ? oauthCol.nonce : null
+
+        db.run(
+          `INSERT INTO agents (
+             agentId, userId,
+             apiKeyCiphertext, apiKeyNonce,
+             oauthCiphertext, oauthNonce,
+             status, registeredAt, lastHeartbeatAt, lastActivityAt, cooldownUntil
+           ) VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, 0, NULL)
+           ON CONFLICT(agentId) DO UPDATE SET
+             userId = excluded.userId,
+             registeredAt = excluded.registeredAt,
+             lastHeartbeatAt = excluded.lastHeartbeatAt`,
+          [
+            payload.agentId,
+            payload.userId,
+            insertApiCt,
+            insertApiNonce,
+            insertOauthCt,
+            insertOauthNonce,
+            now,
+            now,
+          ]
+        )
+
+        // Conditional per-field UPDATE (the INSERT branch already populated
+        // the right values; this pass only matters for the UPDATE branch).
+        if (apiCol.write) {
+          db.run(
+            `UPDATE agents
+                SET apiKeyCiphertext = ?, apiKeyNonce = ?
+              WHERE agentId = ?`,
+            [apiCol.ct, apiCol.nonce, payload.agentId]
+          )
+        }
+        if (oauthCol.write) {
+          db.run(
+            `UPDATE agents
+                SET oauthCiphertext = ?, oauthNonce = ?
+              WHERE agentId = ?`,
+            [oauthCol.ct, oauthCol.nonce, payload.agentId]
+          )
+        }
+
+        // Invariant: at least one credential must be non-null post-update.
+        const row = db
+          .query(
+            `SELECT apiKeyCiphertext IS NOT NULL AS hasApi,
+                    oauthCiphertext  IS NOT NULL AS hasOauth
+               FROM agents WHERE agentId = ?`
+          )
+          .get(payload.agentId) as { hasApi: number; hasOauth: number } | null
+        if (!row || (row.hasApi === 0 && row.hasOauth === 0)) {
+          throw new Error(
+            "registerAgent: row must have at least one non-null credential"
+          )
+        }
+      })()
     }
   )
 
@@ -109,43 +186,67 @@ export function createStore(dbPath: string, crypto: Crypto) {
   const acquireCredential = trace(
     "store.acquireCredential",
     (requestingAgentId: string): AvailableCredentialResponse | null => {
-      // bun:sqlite's db.transaction() opens BEGIN DEFERRED. With a single
-      // in-process SQLite connection and synchronous bun:sqlite calls, the JS
-      // event loop serializes every transaction body, so DEFERRED is sufficient
-      // to guarantee race-free read-modify-write here. If we ever move to a
-      // multi-process / multi-connection model, switch to BEGIN IMMEDIATE.
+      type CredCols = {
+        apiKeyCiphertext: Uint8Array | null
+        apiKeyNonce: Uint8Array | null
+        oauthCiphertext: Uint8Array | null
+        oauthNonce: Uint8Array | null
+      }
+
+      // Try apiKey first, then oauth. Returns decrypted plaintext or null
+      // if both columns are NULL or both decrypt attempts fail.
+      const pickToken = (row: CredCols): string | null => {
+        if (row.apiKeyCiphertext && row.apiKeyNonce) {
+          try {
+            return crypto.decryptToken(
+              Buffer.from(row.apiKeyCiphertext),
+              Buffer.from(row.apiKeyNonce)
+            )
+          } catch {
+            /* fall through to oauth */
+          }
+        }
+        if (row.oauthCiphertext && row.oauthNonce) {
+          try {
+            return crypto.decryptToken(
+              Buffer.from(row.oauthCiphertext),
+              Buffer.from(row.oauthNonce)
+            )
+          } catch {
+            /* fall through to skip */
+          }
+        }
+        return null
+      }
+
       return db.transaction((): AvailableCredentialResponse | null => {
         const now = Date.now()
 
         // 1. existing active lease wins
         const existing = db
           .query(
-            `SELECT l.id, a.tokenCiphertext, a.tokenNonce
+            `SELECT l.id,
+                    a.apiKeyCiphertext, a.apiKeyNonce,
+                    a.oauthCiphertext,  a.oauthNonce
                FROM leases l
                JOIN agents a ON a.agentId = l.credentialAgentId
               WHERE l.leasedTo = ?
                 AND l.releasedAt IS NULL
                 AND (l.leasedAt + l.ttl) > ?`
           )
-          .get(requestingAgentId, now) as
-          | { id: string; tokenCiphertext: Buffer; tokenNonce: Buffer }
-          | null
+          .get(requestingAgentId, now) as (CredCols & { id: string }) | null
         if (existing) {
-          try {
-            const token = crypto.decryptToken(
-              existing.tokenCiphertext,
-              existing.tokenNonce
-            )
-            return { token, leaseId: existing.id }
-          } catch {
-            // existing lease's lender row is undecryptable; fall through
-          }
+          const token = pickToken(existing)
+          if (token) return { token, leaseId: existing.id }
+          // existing lease's lender has no usable creds; fall through
         }
 
-        // 2. fresh idle, not-cooldowned, not-self, no active lease — try each
+        // 2. fresh idle, not-cooldowned, not-self, no active lease
         const primaries = db
           .query(
-            `SELECT a.agentId, a.tokenCiphertext, a.tokenNonce
+            `SELECT a.agentId,
+                    a.apiKeyCiphertext, a.apiKeyNonce,
+                    a.oauthCiphertext,  a.oauthNonce
                FROM agents a
                LEFT JOIN leases l
                  ON l.credentialAgentId = a.agentId
@@ -157,52 +258,40 @@ export function createStore(dbPath: string, crypto: Crypto) {
                 AND l.id IS NULL
               ORDER BY a.lastActivityAt ASC`
           )
-          .all(now, requestingAgentId, now) as Array<{
-            agentId: string
-            tokenCiphertext: Buffer
-            tokenNonce: Buffer
-          }>
+          .all(now, requestingAgentId, now) as Array<CredCols & { agentId: string }>
         for (const c of primaries) {
-          try {
-            const token = crypto.decryptToken(c.tokenCiphertext, c.tokenNonce)
-            const leaseId = globalThis.crypto.randomUUID()
-            db.run(
-              "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
-              [leaseId, c.agentId, requestingAgentId, now, DEFAULTS.LEASE_TTL_MS]
-            )
-            return { token, leaseId }
-          } catch {
-            continue // skip undecryptable candidate
-          }
+          const token = pickToken(c)
+          if (!token) continue
+          const leaseId = globalThis.crypto.randomUUID()
+          db.run(
+            "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
+            [leaseId, c.agentId, requestingAgentId, now, DEFAULTS.LEASE_TTL_MS]
+          )
+          return { token, leaseId }
         }
 
         // 3. fallback: share an already-leased idle (cooldown still respected)
         const fallbacks = db
           .query(
-            `SELECT a.agentId, a.tokenCiphertext, a.tokenNonce
+            `SELECT a.agentId,
+                    a.apiKeyCiphertext, a.apiKeyNonce,
+                    a.oauthCiphertext,  a.oauthNonce
                FROM agents a
               WHERE a.status = 'idle'
                 AND a.agentId != ?
                 AND (a.cooldownUntil IS NULL OR a.cooldownUntil < ?)
               ORDER BY a.lastActivityAt ASC`
           )
-          .all(requestingAgentId, now) as Array<{
-            agentId: string
-            tokenCiphertext: Buffer
-            tokenNonce: Buffer
-          }>
+          .all(requestingAgentId, now) as Array<CredCols & { agentId: string }>
         for (const c of fallbacks) {
-          try {
-            const token = crypto.decryptToken(c.tokenCiphertext, c.tokenNonce)
-            const leaseId = globalThis.crypto.randomUUID()
-            db.run(
-              "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
-              [leaseId, c.agentId, requestingAgentId, now, DEFAULTS.LEASE_TTL_MS]
-            )
-            return { token, leaseId }
-          } catch {
-            continue
-          }
+          const token = pickToken(c)
+          if (!token) continue
+          const leaseId = globalThis.crypto.randomUUID()
+          db.run(
+            "INSERT INTO leases (id, credentialAgentId, leasedTo, leasedAt, ttl) VALUES (?, ?, ?, ?, ?)",
+            [leaseId, c.agentId, requestingAgentId, now, DEFAULTS.LEASE_TTL_MS]
+          )
+          return { token, leaseId }
         }
 
         return null
@@ -337,21 +426,24 @@ function migrate(db: Database, crypto: Crypto) {
   const agentCols = db
     .query("PRAGMA table_info(agents)")
     .all() as Array<{ name: string }>
-  const agentColNames = agentCols.map((c) => c.name)
+  const agentColNames = new Set(agentCols.map((c) => c.name))
 
-  // CREATE TABLE IF NOT EXISTS is a no-op when the table already exists with
-  // an old shape, so we have to add the new columns explicitly here.
-  if (!agentColNames.includes("tokenCiphertext")) {
-    db.exec("ALTER TABLE agents ADD COLUMN tokenCiphertext BLOB")
-  }
-  if (!agentColNames.includes("tokenNonce")) {
-    db.exec("ALTER TABLE agents ADD COLUMN tokenNonce BLOB")
-  }
-  if (!agentColNames.includes("cooldownUntil")) {
+  // Pre-existing migration: the very first plaintext schema lacked
+  // cooldownUntil; add it before any later steps assume it exists.
+  if (!agentColNames.has("cooldownUntil")) {
     db.exec("ALTER TABLE agents ADD COLUMN cooldownUntil INTEGER")
+    agentColNames.add("cooldownUntil")
   }
 
-  if (agentColNames.includes("token")) {
+  // Pre-existing migration from the very first plaintext schema.
+  // Only runs against ancient DBs that still have the `token TEXT` column.
+  if (agentColNames.has("token")) {
+    if (!agentColNames.has("tokenCiphertext")) {
+      db.exec("ALTER TABLE agents ADD COLUMN tokenCiphertext BLOB")
+    }
+    if (!agentColNames.has("tokenNonce")) {
+      db.exec("ALTER TABLE agents ADD COLUMN tokenNonce BLOB")
+    }
     const rows = db
       .query("SELECT agentId, token FROM agents")
       .all() as Array<{ agentId: string; token: string }>
@@ -363,8 +455,76 @@ function migrate(db: Database, crypto: Crypto) {
       )
     }
     db.exec("ALTER TABLE agents DROP COLUMN token")
+    agentColNames.delete("token")
+    agentColNames.add("tokenCiphertext")
+    agentColNames.add("tokenNonce")
   }
 
+  // New in 2026-04-22: split tokenCiphertext into apiKeyCiphertext +
+  // oauthCiphertext based on the decrypted prefix.
+  if (!agentColNames.has("apiKeyCiphertext")) {
+    db.exec("ALTER TABLE agents ADD COLUMN apiKeyCiphertext BLOB")
+    db.exec("ALTER TABLE agents ADD COLUMN apiKeyNonce BLOB")
+    db.exec("ALTER TABLE agents ADD COLUMN oauthCiphertext BLOB")
+    db.exec("ALTER TABLE agents ADD COLUMN oauthNonce BLOB")
+    agentColNames.add("apiKeyCiphertext")
+    agentColNames.add("apiKeyNonce")
+    agentColNames.add("oauthCiphertext")
+    agentColNames.add("oauthNonce")
+  }
+
+  if (agentColNames.has("tokenCiphertext")) {
+    const rows = db
+      .query(
+        `SELECT agentId, tokenCiphertext, tokenNonce
+           FROM agents
+          WHERE tokenCiphertext IS NOT NULL`
+      )
+      .all() as Array<{
+        agentId: string
+        tokenCiphertext: Uint8Array
+        tokenNonce: Uint8Array
+      }>
+    let migrated = 0
+    let skipped = 0
+    for (const r of rows) {
+      try {
+        const plaintext = crypto.decryptToken(
+          Buffer.from(r.tokenCiphertext),
+          Buffer.from(r.tokenNonce)
+        )
+        const isApiKey = plaintext.startsWith("sk-ant-api")
+        if (isApiKey) {
+          db.run(
+            `UPDATE agents
+                SET apiKeyCiphertext = ?, apiKeyNonce = ?
+              WHERE agentId = ?`,
+            [r.tokenCiphertext, r.tokenNonce, r.agentId]
+          )
+        } else {
+          db.run(
+            `UPDATE agents
+                SET oauthCiphertext = ?, oauthNonce = ?
+              WHERE agentId = ?`,
+            [r.tokenCiphertext, r.tokenNonce, r.agentId]
+          )
+        }
+        migrated += 1
+      } catch {
+        skipped += 1 // row encrypted under a different key; owner re-registers
+      }
+    }
+    db.exec("ALTER TABLE agents DROP COLUMN tokenCiphertext")
+    db.exec("ALTER TABLE agents DROP COLUMN tokenNonce")
+    if (migrated > 0 || skipped > 0) {
+      console.log(
+        `migrated ${migrated} agent rows into (apiKey, oauth) columns ` +
+          `(${skipped} skipped — undecryptable under current ENCRYPTION_KEY)`
+      )
+    }
+  }
+
+  // Unchanged — lease column migrations from the hardening PR.
   const leaseCols = db
     .query("PRAGMA table_info(leases)")
     .all() as Array<{ name: string }>
