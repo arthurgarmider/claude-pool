@@ -64,11 +64,17 @@ describe("integration: hardened failover + audit + cooldown + persistence", () =
 
     await fetch(
       `http://localhost:${SERVER_PORT}/agents/register`,
-      reqInit({ agentId: "alice-agent", userId: "alice", token: "alice-token" })
+      reqInit({
+        agentId: "alice-agent", userId: "alice",
+        oauthToken: "sk-ant-oat01-alice-aaaaaaaaaaaaaaa",
+      })
     )
     await fetch(
       `http://localhost:${SERVER_PORT}/agents/register`,
-      reqInit({ agentId: "bob-agent", userId: "bob", token: "bob-token" })
+      reqInit({
+        agentId: "bob-agent", userId: "bob",
+        oauthToken: "sk-ant-oat01-bob-bbbbbbbbbbbbbbbbbbb",
+      })
     )
     await fetch(
       `http://localhost:${SERVER_PORT}/agents/heartbeat`,
@@ -185,7 +191,7 @@ describe("integration: hardened failover + audit + cooldown + persistence", () =
     // alice should still appear as idle (we set her so in beforeAll, persisted to disk)
     const r = store2.acquireCredential("bob-agent")
     expect(r).not.toBeNull()
-    expect(r!.token).toBe("alice-token")
+    expect(r!.token).toBe("sk-ant-oat01-alice-aaaaaaaaaaaaaaa")
     store2.db.close()
 
     // restart the server for any subsequent tests
