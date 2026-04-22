@@ -1,6 +1,6 @@
 import { join } from "path"
 import { loadConfigAsync } from "./config"
-import { extractToken } from "./credentials"
+import { collectCredentials } from "./credentials"
 import { createHeartbeat, startHeartbeatLoop } from "./heartbeat"
 import { createProxy } from "./proxy"
 import { DEFAULTS } from "@claude-pool/shared/src/types"
@@ -13,7 +13,7 @@ async function main() {
     await Bun.file(join(CONFIG_DIR, "agent-id")).text()
   ).trim()
 
-  const token = await extractToken()
+  const initialCreds = await collectCredentials()
   let credentialValid = true
 
   // register with server
@@ -26,7 +26,7 @@ async function main() {
     body: JSON.stringify({
       agentId,
       userId: process.env.USER || "unknown",
-      token,
+      ...initialCreds,
     }),
   })
   if (!registerRes.ok) {
@@ -55,24 +55,27 @@ async function main() {
   // periodic credential refresh
   setInterval(async () => {
     try {
-      const freshToken = await extractToken()
+      const freshCreds = await collectCredentials()
       await fetch(`${config.server.url}/agents/register`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${config.server.secret}`,
         },
+        // JSON.stringify drops `undefined` keys, so only the credentials we
+        // could actually re-read are sent, which the server interprets as
+        // "preserve unsent columns" (see store.registerAgent).
         body: JSON.stringify({
           agentId,
           userId: process.env.USER || "unknown",
-          token: freshToken,
+          ...freshCreds,
         }),
       })
       credentialValid = true
     } catch {
       credentialValid = false
     }
-  }, 10 * 60 * 1000) // every 10 minutes
+  }, 10 * 60 * 1000)
 
   // cleanup on shutdown
   const cleanup = () => {

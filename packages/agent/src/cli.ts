@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { join } from "path"
 import { loadConfigAsync } from "./config"
-import { extractToken } from "./credentials"
+import { collectCredentials } from "./credentials"
 import { installDaemon, uninstallDaemon, startDaemon, stopDaemon } from "./daemon"
 import { DEFAULTS } from "@claude-pool/shared/src/types"
 
@@ -12,6 +12,8 @@ const CLAUDE_SETTINGS_PATH = join(process.env.HOME!, ".claude", "settings.json")
 const command = process.argv[2]
 
 async function init() {
+  const flags = parseInitFlags(process.argv.slice(3))
+
   const serverUrl = prompt("Server URL: ")
   if (!serverUrl) throw new Error("Server URL is required")
 
@@ -40,8 +42,27 @@ failover:
   await Bun.spawn(["mkdir", "-p", CONFIG_DIR]).exited
   await Bun.write(CONFIG_PATH, yaml)
 
-  // extract and register credentials
-  const token = await extractToken()
+  // Resolve the API key: flag → env → interactive prompt (unless apiKeyOnly=false AND env/flag already satisfy).
+  let explicitApiKey = flags.apiKey
+  if (
+    !explicitApiKey &&
+    !process.env.ANTHROPIC_API_KEY?.startsWith("sk-ant-api")
+  ) {
+    const entered = prompt(
+      flags.apiKeyOnly
+        ? "Anthropic API key (sk-ant-api-…): "
+        : "Anthropic API key (sk-ant-api-…, press Enter to skip and use Claude Code OAuth): "
+    )
+    if (entered && entered.startsWith("sk-ant-api")) {
+      explicitApiKey = entered
+    }
+  }
+
+  const creds = await collectCredentials({
+    apiKeyOnly: flags.apiKeyOnly,
+    explicitApiKey,
+  })
+
   const agentId = crypto.randomUUID()
   const userId = process.env.USER || "unknown"
 
@@ -51,15 +72,13 @@ failover:
       "Content-Type": "application/json",
       Authorization: `Bearer ${secret}`,
     },
-    body: JSON.stringify({ agentId, userId, token }),
+    body: JSON.stringify({ agentId, userId, ...creds }),
   })
 
   if (!res.ok) throw new Error(`Registration failed: ${res.status}`)
 
-  // save agentId
   await Bun.write(join(CONFIG_DIR, "agent-id"), agentId)
 
-  // configure Claude Code to use our proxy
   const settingsFile = Bun.file(CLAUDE_SETTINGS_PATH)
   const settings = (await settingsFile.exists())
     ? await settingsFile.json()
@@ -72,10 +91,34 @@ failover:
     JSON.stringify({ ...settings, env }, null, 2)
   )
 
+  const which = [
+    creds.apiKey ? "API key" : null,
+    creds.oauthToken ? "Claude Code OAuth" : null,
+  ].filter(Boolean).join(" + ")
   console.log(`Config written to ${CONFIG_PATH}`)
-  console.log(`Registered as ${userId} (${agentId})`)
+  console.log(`Registered as ${userId} (${agentId}) using ${which}`)
   console.log(`Claude Code configured to use proxy at localhost:${port}`)
   console.log("Run 'claude-pool start' to start the agent daemon.")
+}
+
+type InitFlags = { apiKey?: string; apiKeyOnly: boolean }
+
+function parseInitFlags(args: string[]): InitFlags {
+  const flags: InitFlags = { apiKeyOnly: false }
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === "--api-key-only") {
+      flags.apiKeyOnly = true
+    } else if (a === "--api-key") {
+      const value = args[i + 1]
+      if (!value) throw new Error("--api-key requires a value")
+      flags.apiKey = value
+      i += 1
+    } else if (a.startsWith("--api-key=")) {
+      flags.apiKey = a.slice("--api-key=".length)
+    }
+  }
+  return flags
 }
 
 async function status() {
