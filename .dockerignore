@@ -1,0 +1,47 @@
+# Keep the build context small and prevent local secrets/artifacts from
+# ever landing in a server image.
+
+# VCS
+.git/
+.gitignore
+.gitattributes
+
+# Dependencies (installed fresh inside the image)
+node_modules/
+.bun/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Runtime artifacts from local dev (never ship a dev DB into an image)
+*.db
+*.db-shm
+*.db-wal
+*.zip
+
+# Environment files (never bake secrets into an image layer)
+.env
+.env.local
+.env.*.local
+
+# Tests — the server image doesn't need them at runtime
+tests/
+packages/*/src/**/*.test.ts
+
+# The agent package isn't needed in the server image
+packages/agent/
+
+# Editor / OS cruft
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Docs / meta files not needed inside the image
+docs/
+README.md
+SECURITY.md
+LICENSE
+.github/
