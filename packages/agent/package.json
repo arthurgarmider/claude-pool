@@ -9,10 +9,13 @@
   "bin": {
     "claude-pool": "dist/cli.js"
   },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "build": "bun build src/cli.ts --outfile dist/cli.js --target bun && node -e \"const fs=require('fs');const c=fs.readFileSync('dist/cli.js','utf8');fs.writeFileSync('dist/cli.js','#!/usr/bin/env bun\\n'+c);\" && chmod +x dist/cli.js"
   },
-  "dependencies": {
+  "devDependencies": {
     "@claude-pool/shared": "workspace:*",
     "yaml": "^2",
     "zod": "^3"
