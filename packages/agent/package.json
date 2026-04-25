@@ -2,9 +2,15 @@
   "name": "@claude-pool/agent",
   "version": "0.1.0",
   "type": "module",
-  "main": "src/index.ts",
+  "files": [
+    "dist/",
+    "README.md"
+  ],
   "bin": {
-    "claude-pool": "src/cli.ts"
+    "claude-pool": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun build src/cli.ts --outfile dist/cli.js --target bun && node -e \"const fs=require('fs');const c=fs.readFileSync('dist/cli.js','utf8');fs.writeFileSync('dist/cli.js','#!/usr/bin/env bun\\n'+c);\" && chmod +x dist/cli.js"
   },
   "dependencies": {
     "@claude-pool/shared": "workspace:*",
