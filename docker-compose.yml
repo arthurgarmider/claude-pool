@@ -20,7 +20,7 @@ services:
       - claude-pool-data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:3847/health -H \"Authorization: Bearer ${AUTH_SECRET}\""]
+      test: ["CMD", "bun", "--eval", "const r=await fetch('http://localhost:3847/health',{headers:{'Authorization':'Bearer '+Bun.env.AUTH_SECRET}});if(!r.ok)process.exit(1)"]
       interval: 30s
       timeout: 5s
       retries: 3
