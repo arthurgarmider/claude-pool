@@ -3,13 +3,21 @@ name: publish
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
 
 jobs:
   publish-npm:
     name: Publish agent to npm
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,7 +31,8 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build agent
-        run: cd packages/agent && bun run build
+        working-directory: packages/agent
+        run: bun run build
 
       - name: Publish to npm
         working-directory: packages/agent
@@ -35,6 +44,8 @@ jobs:
     name: Publish server to Docker Hub
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,11 +67,13 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             claudepool/server:latest
             claudepool/server:${{ steps.version.outputs.VERSION }}

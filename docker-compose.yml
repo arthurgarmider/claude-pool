@@ -19,6 +19,12 @@ services:
     volumes:
       - claude-pool-data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3847/health -H \"Authorization: Bearer ${AUTH_SECRET}\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   claude-pool-data:
