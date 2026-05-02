@@ -5,7 +5,7 @@
 
 [![CI](https://github.com/arthurflatscher/claude-pool/actions/workflows/test.yml/badge.svg)](https://github.com/arthurflatscher/claude-pool/actions/workflows/test.yml)
 [![npm](https://img.shields.io/npm/v/@claudepool/agent)](https://www.npmjs.com/package/@claudepool/agent)
-[![Docker](https://img.shields.io/docker/v/claudepool/server?label=docker)](https://hub.docker.com/r/claudepool/server)
+[![Docker](https://img.shields.io/docker/v/arthurga/claudepool?label=docker)](https://hub.docker.com/r/arthurga/claudepool)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ![claude-pool demo](docs/demo.gif)

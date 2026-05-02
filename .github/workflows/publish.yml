@@ -81,5 +81,5 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
-            claudepool/server:latest
-            claudepool/server:${{ steps.version.outputs.VERSION }}
+            arthurga/claudepool:latest
+            arthurga/claudepool:${{ steps.version.outputs.VERSION }}
