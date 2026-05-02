@@ -9,9 +9,9 @@
       "name": "@claude-pool/agent",
       "version": "0.1.0",
       "bin": {
-        "claude-pool": "src/cli.ts",
+        "claude-pool": "dist/cli.js",
       },
-      "dependencies": {
+      "devDependencies": {
         "@claude-pool/shared": "workspace:*",
         "yaml": "^2",
         "zod": "^3",

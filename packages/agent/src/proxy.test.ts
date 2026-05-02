@@ -290,4 +290,40 @@ describe("proxy", () => {
     expect(activityCount).toBe(1)
     proxy.stop()
   })
+
+  it("CLAUDE_POOL_MOCK_429 skips own-token attempt and borrows from pool", async () => {
+    process.env.CLAUDE_POOL_MOCK_429 = "1"
+    poolCredentials = [{ token: "pool-token", leaseId: "lease-mock" }]
+    mockResponses = [{ status: 200, body: { content: "from pool" } }]
+
+    const proxy = createProxy({
+      port: 19010,
+      anthropicBaseUrl: "http://localhost:19001",
+      serverUrl: "http://localhost:19002",
+      serverSecret: "secret",
+      maxRetries: 3,
+      onActivity: () => {},
+    })
+
+    const res = await fetch("http://localhost:19010/v1/messages", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer my-token",
+        "Content-Type": "application/json",
+        "X-Claude-Pool-Agent-Id": "alice",
+      },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    // Only one upstream call — own-token was never tried
+    expect(callCount).toBe(1)
+    // Pool was queried for a credential
+    expect(
+      poolCalls.some((c) => c.method === "GET" && c.path.includes("/credentials/available"))
+    ).toBe(true)
+
+    delete process.env.CLAUDE_POOL_MOCK_429
+    proxy.stop()
+  })
 })

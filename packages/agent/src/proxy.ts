@@ -20,6 +20,12 @@ type CachedCredential = {
 export function createProxy(config: ProxyConfig) {
   let cachedCredential: CachedCredential | null = null
   let localAgentCooldownUntil = 0
+  let mockNextAs429 = process.env.CLAUDE_POOL_MOCK_429 === "1"
+  if (mockNextAs429) {
+    console.warn(
+      "[MOCK MODE] CLAUDE_POOL_MOCK_429=1 — next request will simulate a 429 on own credential. Do not use in production."
+    )
+  }
   const cacheTtlMs = DEFAULTS.LEASE_TTL_MS
 
   const fetchCredentialFromPool = trace(
@@ -153,8 +159,14 @@ export function createProxy(config: ProxyConfig) {
       const reqHeaders = new Headers(req.headers)
       const agentId = req.headers.get("X-Claude-Pool-Agent-Id") || "default"
 
-      // 1. try own token, unless we already know it's cooled down locally
-      if (Date.now() >= localAgentCooldownUntil) {
+      // 1. try own token, unless cooled down locally or mock mode is active
+      if (mockNextAs429) {
+        mockNextAs429 = false
+        console.warn("[MOCK MODE] Simulating 429 on own credential — routing to pool failover")
+        const mockRetryAfter = 60
+        localAgentCooldownUntil = Date.now() + mockRetryAfter * 1000
+        cooldownAgent(agentId, mockRetryAfter).catch(() => {})
+      } else if (Date.now() >= localAgentCooldownUntil) {
         const ownResponse = await forwardRequest(
           reqUrl,
           reqMethod,

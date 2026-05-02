@@ -1,0 +1,30 @@
+# claude-pool server
+# Quick start:
+#   cp .env.example .env      # then fill in AUTH_SECRET and ENCRYPTION_KEY
+#   docker compose up -d
+#
+# Generate ENCRYPTION_KEY:  openssl rand -base64 32
+# Generate AUTH_SECRET:     openssl rand -base64 32
+
+services:
+  server:
+    image: claudepool/server:latest
+    ports:
+      - "3847:3847"
+    environment:
+      AUTH_SECRET: ${AUTH_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      # PORT: 3847          # optional: override listen port
+      # DB_PATH: /data/claude-pool.db  # default
+    volumes:
+      - claude-pool-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "--eval", "const r=await fetch('http://localhost:3847/health',{headers:{'Authorization':'Bearer '+Bun.env.AUTH_SECRET}});if(!r.ok)process.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  claude-pool-data:
