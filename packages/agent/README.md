@@ -3,7 +3,7 @@
 > Your team hits a Claude Code rate limit. claude-pool silently
 > borrows an idle API key from a teammate and keeps going.
 
-See the [full documentation](https://github.com/YOUR_ORG/claude-pool) for architecture, server setup, and all commands.
+See the [full documentation](https://github.com/arthurgarmider/claude-pool) for architecture, server setup, and all commands.
 
 ## Install
 
