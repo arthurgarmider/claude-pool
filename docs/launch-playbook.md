@@ -37,18 +37,9 @@ Open in incognito (so caching doesn't fool you):
 - <https://www.npmjs.com/package/@claudepool/agent> — confirm the README renders (will be cleaned up after the 0.1.1 republish, see 0.4)
 - <https://hub.docker.com/r/arthurga/claudepool> — confirm the overview shows
 
-### 0.4 — Republish v0.1.1 to fix the npm README (3 min)
+### 0.4 — npm README cleanup (already done — v0.1.1 published)
 
-A small bug: the agent README on npmjs.com had a leftover `YOUR_ORG/claude-pool` placeholder. Already fixed in code; just need a version bump and a re-tag to publish:
-
-```bash
-cd /Users/arthur/git/startup/claude-pool
-git pull --rebase
-git tag v0.1.1
-git push origin v0.1.1
-```
-
-The CI will publish automatically. Verify at <https://www.npmjs.com/package/@claudepool/agent> that the doc link now points to the real GitHub URL.
+The agent README's broken `YOUR_ORG/claude-pool` link is fixed in v0.1.1. Just verify at <https://www.npmjs.com/package/@claudepool/agent> that the "full documentation" link points to the real GitHub URL.
 
 ### 0.5 — Submit to awesome-lists (10 min)
 
