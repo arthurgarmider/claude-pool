@@ -1,54 +1,30 @@
 # claude-pool demo tape
-# Records a GIF showing transparent 429 failover in action.
+# Records the terminal GIF that goes in the README.
 #
 # Prerequisites:
-#   1. Install vhs:  brew install vhs
-#   2. Start a local claude-pool server (docker compose up -d)
-#   3. Start two agents:
-#        Agent 1 (you): claude-pool start
-#        Agent 2 (teammate sim): start a second agent with a different key registered
-#   4. Record: vhs docs/demo.tape
+#   brew install vhs
 #
-# The demo uses CLAUDE_POOL_MOCK_429=1 to simulate a 429 without hitting
-# real rate limits. The proxy will skip the own-key attempt on the next
-# request and borrow from the pool instead.
+# Record:
+#   vhs docs/demo.tape
+#
+# This tape uses scripts/demo-play.sh which simulates a real session
+# (no running server or API keys required).
 
 Output docs/demo.gif
 
 Set FontSize 14
-Set Width 1000
-Set Height 420
+Set Width 900
+Set Height 380
 Set Theme "Dracula"
 Set PlaybackSpeed 0.8
+Set CursorBlink false
 
-# Show pool — two teammates active
-Type "claude-pool pool"
+Hide
+Type "cd /Users/arthur/git/startup/claude-pool"
 Enter
-Sleep 2s
+Sleep 200ms
+Show
 
-# Narrate what we're about to do
-Type "# next request will hit a rate limit..."
+Type "bash scripts/demo-play.sh"
 Enter
-Sleep 1s
-
-# Trigger mock 429 — the proxy will skip own key and borrow from pool
-Type "CLAUDE_POOL_MOCK_429=1 curl -s http://localhost:8484/v1/messages -X POST \\"
-Enter
-Type "  -H 'Content-Type: application/json' \\"
-Enter
-Type "  -H 'Authorization: Bearer test' \\"
-Enter
-Type "  -d '{\"model\":\"claude-opus-4-5\",\"max_tokens\":10,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}' \\"
-Enter
-Type "  | jq .content[0].text"
-Enter
-Sleep 3s
-
-# Show updated status — own key in cooldown, pool credential was used
-Type "claude-pool status"
-Enter
-Sleep 2s
-
-Type "# session continued without interruption"
-Enter
-Sleep 1.5s
+Sleep 25s
