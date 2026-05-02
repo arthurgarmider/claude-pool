@@ -1,4 +1,4 @@
-# @claude-pool/agent
+# @claudepool/agent
 
 > Your team hits a Claude Code rate limit. claude-pool silently
 > borrows an idle API key from a teammate and keeps going.
@@ -8,7 +8,7 @@ See the [full documentation](https://github.com/YOUR_ORG/claude-pool) for archit
 ## Install
 
 ```bash
-bun install -g @claude-pool/agent
+bun install -g @claudepool/agent
 ```
 
 Requires [Bun](https://bun.sh) ≥ 1.0.

@@ -4,7 +4,7 @@
 > borrows an idle API key from a teammate and keeps going.
 
 [![CI](https://github.com/arthurflatscher/claude-pool/actions/workflows/test.yml/badge.svg)](https://github.com/arthurflatscher/claude-pool/actions/workflows/test.yml)
-[![npm](https://img.shields.io/npm/v/@claude-pool/agent)](https://www.npmjs.com/package/@claude-pool/agent)
+[![npm](https://img.shields.io/npm/v/@claudepool/agent)](https://www.npmjs.com/package/@claudepool/agent)
 [![Docker](https://img.shields.io/docker/v/claudepool/server?label=docker)](https://hub.docker.com/r/claudepool/server)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -28,7 +28,7 @@ docker compose up -d
 
 ```bash
 # Requires Bun: https://bun.sh
-bun install -g @claude-pool/agent
+bun install -g @claudepool/agent
 export ANTHROPIC_API_KEY=sk-ant-api-…
 claude-pool init   # enter your server URL and AUTH_SECRET when prompted
 claude-pool start  # Claude Code now routes through the pool
