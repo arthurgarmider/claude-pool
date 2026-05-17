@@ -3,7 +3,7 @@
 > Your team hits a Claude Code rate limit. claude-pool silently
 > borrows an idle API key from a teammate and keeps going.
 
-[![CI](https://github.com/arthurflatscher/claude-pool/actions/workflows/test.yml/badge.svg)](https://github.com/arthurflatscher/claude-pool/actions/workflows/test.yml)
+[![CI](https://github.com/arthurgarmider/claude-pool/actions/workflows/test.yml/badge.svg)](https://github.com/arthurgarmider/claude-pool/actions/workflows/test.yml)
 [![npm](https://img.shields.io/npm/v/@claudepool/agent)](https://www.npmjs.com/package/@claudepool/agent)
 [![Docker](https://img.shields.io/docker/v/arthurga/claudepool?label=docker)](https://hub.docker.com/r/arthurga/claudepool)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -12,13 +12,43 @@
 
 ---
 
+## Why claude-pool?
+
+You're 90 minutes into a refactor with Claude Code. It hits a 429. Now you're context-switching for an hour while your teammate's API key sits idle one desk over.
+
+claude-pool fixes that. It's a small self-hosted service that pools your team's Anthropic API keys so any active session can transparently borrow an idle one when it hits a rate limit. No code changes. No new IDE. No telemetry to a third party.
+
+**Built for:**
+- Small engineering teams already paying for individual Anthropic API access
+- Anyone who has felt the "I just lost my flow because of a 429" pain
+- Teams that want failover without giving up audit logs or self-hosting
+
+**Not for:**
+- Public exposure (run it behind a VPN — see Security model)
+- Pooling personal Claude Code subscriptions across users (likely violates Anthropic's Usage Policy — see OAuth mode section)
+
+---
+
+## How it compares
+
+| | One shared API key | Pay for max plan per dev | claude-pool |
+|---|---|---|---|
+| Rate-limit recovery | ❌ everyone shares one limit | ✅ but $$$ per seat | ✅ pools existing keys |
+| Per-developer billing/audit | ❌ no attribution | ✅ | ✅ `/audit` endpoint |
+| Self-hosted | ✅ | ❌ | ✅ MIT, your VPN |
+| Credentials encrypted at rest | depends on your setup | ✅ (Anthropic) | ✅ AES-256-GCM |
+| Zero workflow change for devs | ❌ rotate by hand | ✅ | ✅ `ANTHROPIC_BASE_URL` |
+| Cost | $0 + frustration | $$$$ | $0 + a $5 VPS |
+
+---
+
 ## Quick start
 
 ### 1. Server — one command on any VPS
 
 ```bash
-curl -O https://raw.githubusercontent.com/arthurflatscher/claude-pool/main/docker-compose.yml
-curl -O https://raw.githubusercontent.com/arthurflatscher/claude-pool/main/.env.example
+curl -O https://raw.githubusercontent.com/arthurgarmider/claude-pool/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/arthurgarmider/claude-pool/main/.env.example
 cp .env.example .env
 # Edit .env: set AUTH_SECRET and ENCRYPTION_KEY (use `openssl rand -base64 32` for each)
 docker compose up -d

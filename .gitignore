@@ -38,3 +38,6 @@ coverage/
 
 # Internal planning & design docs (kept locally, not published)
 docs/superpowers/
+
+# Local marketing assets (not published)
+marketing/
