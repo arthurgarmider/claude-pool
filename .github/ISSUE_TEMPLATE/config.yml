@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/arthurgarmider/claude-pool/security/advisories/new
+    about: Found a vulnerability? Please report it privately, not as a public issue.
+  - name: Question or discussion
+    url: https://github.com/arthurgarmider/claude-pool/discussions
+    about: Not a bug or feature request — start a discussion.

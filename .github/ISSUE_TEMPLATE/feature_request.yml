@@ -1,0 +1,42 @@
+name: Feature request
+description: An idea to make claude-pool better.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request: is the feature in scope? claude-pool
+        does one thing — pool Anthropic API credentials with transparent 429
+        failover. We'll generally close requests for: other LLM providers,
+        generic load balancing, a hosted SaaS version. A fork is the right
+        answer for those.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the pain. Don't jump to the solution yet.
+      placeholder: |
+        When my team's pool has 10 agents, the loud-coder hoovers up everyone's
+        leases and the rest of us still hit 429s...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to see?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else have you tried or thought about?
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Are you willing to contribute?
+      options:
+        - label: I can open a PR if this is accepted.

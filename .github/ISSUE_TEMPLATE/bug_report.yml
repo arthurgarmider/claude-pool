@@ -1,0 +1,59 @@
+name: Bug report
+description: Something broken? Tell us what you expected and what happened.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more concrete you can
+        be, the faster we can fix it.
+
+  - type: input
+    id: version
+    attributes:
+      label: claude-pool version
+      description: Output of `claude-pool --version` (agent) and the server image tag.
+      placeholder: "agent 0.1.1 / server arthurga/claudepool:0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which component?
+      options:
+        - Agent (developer machine)
+        - Server (Docker)
+        - Both
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what did you get?
+      placeholder: |
+        I ran `claude-pool start` and...
+        I expected the proxy to come up.
+        Instead, I got...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `claude-pool logs` and/or `docker logs claudepool-server`. Redact any tokens.
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Bun version, Docker version, anything weird about your setup.
+      placeholder: |
+        macOS 14.5
+        Bun 1.1.30
+        Docker 25.0.3
