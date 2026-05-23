@@ -5,6 +5,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@claude-pool/shared": "workspace:*",
-    "hono": "^4"
+    "hono": "^4",
+    "prom-client": "^15.1.3"
   }
 }
