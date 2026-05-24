@@ -310,4 +310,81 @@ describe("routes", () => {
       expect(res.status).toBe(200)
     })
   })
+
+  describe("GET /metrics", () => {
+    const unauth = (path: string) =>
+      new Request(`http://localhost${path}`, { method: "GET" })
+
+    it("requires auth when METRICS_PUBLIC is unset", async () => {
+      delete process.env.METRICS_PUBLIC
+      const res = await app.fetch(unauth("/metrics"))
+      expect(res.status).toBe(401)
+    })
+
+    it("returns Prometheus text with auth", async () => {
+      delete process.env.METRICS_PUBLIC
+      const res = await app.fetch(req("GET", "/metrics"))
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type") ?? "").toContain("text/plain")
+      const body = await res.text()
+      expect(body).toContain("claudepool_agents_total")
+      expect(body).toContain("claudepool_leases_open")
+      expect(body).toContain("claudepool_leases_total")
+      expect(body).toContain("claudepool_429s_total")
+      expect(body).toContain("claudepool_request_duration_seconds")
+    })
+
+    it("serves unauthenticated when METRICS_PUBLIC=true", async () => {
+      process.env.METRICS_PUBLIC = "true"
+      try {
+        const res = await app.fetch(unauth("/metrics"))
+        expect(res.status).toBe(200)
+        const body = await res.text()
+        expect(body).toContain("claudepool_agents_total")
+      } finally {
+        delete process.env.METRICS_PUBLIC
+      }
+    })
+
+    it("increments claudepool_leases_total after acquire", async () => {
+      delete process.env.METRICS_PUBLIC
+      await app.fetch(req("POST", "/agents/register", { agentId: "a1", userId: "alice", oauthToken: "tok-alice-aaaaaaaaaaaa" }))
+      await app.fetch(req("POST", "/agents/heartbeat", { agentId: "a1", status: "idle", lastActivityAt: 0, credentialValid: true }))
+      await app.fetch(req("POST", "/agents/register", { agentId: "a2", userId: "bob", oauthToken: "tok-bob-bbbbbbbbbbbbbbb" }))
+
+      const acq = await app.fetch(req("GET", "/credentials/available?agentId=a2"))
+      expect(acq.status).toBe(200)
+
+      const res = await app.fetch(req("GET", "/metrics"))
+      const body = await res.text()
+      expect(body).toMatch(/^claudepool_leases_total 1$/m)
+    })
+
+    it("increments claudepool_429s_total on cooldown", async () => {
+      delete process.env.METRICS_PUBLIC
+      await app.fetch(req("POST", "/agents/register", { agentId: "a1", userId: "alice", oauthToken: "tok-alice-aaaaaaaaaaaa" }))
+      await app.fetch(req("POST", "/agents/heartbeat", { agentId: "a1", status: "idle", lastActivityAt: 0, credentialValid: true }))
+      await app.fetch(
+        req("POST", "/agents/a1/cooldown", { retryAfterSeconds: 60 }),
+      )
+
+      const res = await app.fetch(req("GET", "/metrics"))
+      const body = await res.text()
+      expect(body).toMatch(/^claudepool_429s_total\{scope="agent"\} 1$/m)
+    })
+
+    it("reports cooling agents in claudepool_agents_total", async () => {
+      delete process.env.METRICS_PUBLIC
+      await app.fetch(req("POST", "/agents/register", { agentId: "a1", userId: "alice", oauthToken: "tok-alice-aaaaaaaaaaaa" }))
+      await app.fetch(req("POST", "/agents/heartbeat", { agentId: "a1", status: "idle", lastActivityAt: 0, credentialValid: true }))
+      await app.fetch(
+        req("POST", "/agents/a1/cooldown", { retryAfterSeconds: 60 }),
+      )
+
+      const res = await app.fetch(req("GET", "/metrics"))
+      const body = await res.text()
+      expect(body).toMatch(/^claudepool_agents_total\{state="cooling"\} 1$/m)
+      expect(body).toMatch(/^claudepool_agents_total\{state="idle"\} 0$/m)
+    })
+  })
 })

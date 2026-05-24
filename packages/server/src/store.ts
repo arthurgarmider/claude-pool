@@ -359,6 +359,13 @@ export function createStore(dbPath: string, crypto: Crypto) {
     }
   )
 
+  const countOpenLeases = trace("store.countOpenLeases", (): number => {
+    const row = db
+      .query("SELECT COUNT(*) AS n FROM leases WHERE releasedAt IS NULL")
+      .get() as { n: number }
+    return row.n
+  })
+
   const listAudit = trace(
     "store.listAudit",
     (opts: { agentId?: string; since?: number; limit?: number }): AuditEntry[] => {
@@ -418,6 +425,7 @@ export function createStore(dbPath: string, crypto: Crypto) {
     expireLeases,
     markLeaseCooldown,
     markAgentCooldown,
+    countOpenLeases,
     listAudit,
   }
 }

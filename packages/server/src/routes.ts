@@ -7,16 +7,43 @@ import {
   DEFAULTS,
 } from "@claude-pool/shared/src/types"
 import type { createStore } from "./store"
+import { createMetrics, type Metrics } from "./metrics"
 
-export function createApp(store: ReturnType<typeof createStore>, authSecret: string) {
+export function createApp(
+  store: ReturnType<typeof createStore>,
+  authSecret: string,
+  metrics: Metrics = createMetrics(store),
+) {
   const app = new Hono()
 
   app.use("*", async (c, next) => {
+    const endTimer = metrics.requestDuration.startTimer()
+    await next()
+    endTimer({
+      route: c.req.routePath || c.req.path,
+      method: c.req.method,
+      status: String(c.res.status),
+    })
+  })
+
+  app.use("*", async (c, next) => {
+    if (
+      c.req.path === "/metrics" &&
+      process.env.METRICS_PUBLIC === "true"
+    ) {
+      return next()
+    }
     const auth = c.req.header("Authorization")
     if (auth !== `Bearer ${authSecret}`) {
       return c.json({ error: "unauthorized" }, 401)
     }
     await next()
+  })
+
+  app.get("/metrics", async (c) => {
+    return c.text(await metrics.registry.metrics(), 200, {
+      "Content-Type": metrics.registry.contentType,
+    })
   })
 
   app.get("/health", (c) => c.json({ status: "ok" }))
@@ -43,6 +70,7 @@ export function createApp(store: ReturnType<typeof createStore>, authSecret: str
         ? parsed.data.retryAfterSeconds * 1000
         : DEFAULTS.DEFAULT_COOLDOWN_MS
     store.markAgentCooldown(c.req.param("id"), ms)
+    metrics.rateLimitsTotal.inc({ scope: "agent" })
     return c.json({ ok: true })
   })
 
@@ -51,6 +79,7 @@ export function createApp(store: ReturnType<typeof createStore>, authSecret: str
     if (!agentId) return c.json({ error: "agentId query param required" }, 400)
     const result = store.acquireCredential(agentId)
     if (!result) return c.json({ error: "no credentials available" }, 404)
+    metrics.leasesTotal.inc()
     return c.json(result)
   })
 
@@ -70,6 +99,7 @@ export function createApp(store: ReturnType<typeof createStore>, authSecret: str
         ? parsed.data.retryAfterSeconds * 1000
         : DEFAULTS.DEFAULT_COOLDOWN_MS
     store.markLeaseCooldown(c.req.param("id"), ms, parsed.data.count ?? 0)
+    metrics.rateLimitsTotal.inc({ scope: "lease" })
     return c.json({ ok: true })
   })
 
