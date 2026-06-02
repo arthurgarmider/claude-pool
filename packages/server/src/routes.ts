@@ -9,6 +9,13 @@ import {
 import type { createStore } from "./store"
 import { createMetrics, type Metrics } from "./metrics"
 
+// Load the dashboard HTML once at module init. Resolves relative to this
+// source file so the path works whether the server is run from source or
+// from a built bundle. The file is plain HTML with inlined CSS + JS.
+const DASHBOARD_HTML = await Bun.file(
+  new URL("./dashboard/index.html", import.meta.url).pathname,
+).text()
+
 export function createApp(
   store: ReturnType<typeof createStore>,
   authSecret: string,
@@ -27,6 +34,12 @@ export function createApp(
   })
 
   app.use("*", async (c, next) => {
+    // /dashboard is a public HTML shell that prompts the user for the bearer
+    // token client-side; the data calls it makes still go through this same
+    // middleware and are auth-checked.
+    if (c.req.path === "/dashboard") {
+      return next()
+    }
     if (
       c.req.path === "/metrics" &&
       process.env.METRICS_PUBLIC === "true"
@@ -38,6 +51,10 @@ export function createApp(
       return c.json({ error: "unauthorized" }, 401)
     }
     await next()
+  })
+
+  app.get("/dashboard", (c) => {
+    return c.html(DASHBOARD_HTML)
   })
 
   app.get("/metrics", async (c) => {
