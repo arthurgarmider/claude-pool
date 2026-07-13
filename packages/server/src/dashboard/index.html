@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claude-pool · dashboard</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #6e7781;
+    --border: #d0d7de;
+    --row-hover: #f6f8fa;
+    --accent: #0969da;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --danger: #cf222e;
+    --cool: #8250df;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --row-hover: #161b22;
+      --accent: #2f81f7;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --danger: #f85149;
+      --cool: #a371f7;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  header .meta { color: var(--muted); font-size: 12px; }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  button, select {
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  button.primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  main { padding: 16px 24px; }
+  section { margin-bottom: 28px; }
+  section h2 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+    align-items: center;
+  }
+  .filters label { color: var(--muted); font-size: 12px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  th {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  tbody tr:hover { background: var(--row-hover); }
+  td.muted { color: var(--muted); }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .pill::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .pill.active::before  { background: var(--ok); }
+  .pill.idle::before    { background: var(--accent); }
+  .pill.offline::before { background: var(--muted); }
+  .pill.cooling::before { background: var(--cool); }
+  .pill.released::before { background: var(--ok); }
+  .pill.expired::before  { background: var(--warn); }
+  .pill.cooldown::before { background: var(--danger); }
+  .empty {
+    color: var(--muted);
+    text-align: center;
+    padding: 24px;
+    font-style: italic;
+  }
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+  }
+  .modal-backdrop.shown { display: flex; }
+  .modal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    width: min(420px, 92vw);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  }
+  .modal h2 {
+    margin: 0 0 8px;
+    font-size: 16px;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--fg);
+  }
+  .modal p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  .modal input {
+    width: 100%;
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+  }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .error {
+    color: var(--danger);
+    font-size: 12px;
+    margin-top: 4px;
+    min-height: 16px;
+  }
+  .footer-meta {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>claude-pool · dashboard</h1>
+    <div class="meta" id="status">loading…</div>
+  </div>
+  <div class="controls">
+    <button id="refresh">Refresh</button>
+    <button id="signout">Clear token</button>
+  </div>
+</header>
+
+<main>
+  <div class="filters">
+    <label for="f-range">Last</label>
+    <select id="f-range">
+      <option value="3600000">1 hour</option>
+      <option value="21600000" selected>6 hours</option>
+      <option value="86400000">24 hours</option>
+      <option value="604800000">7 days</option>
+    </select>
+    <label for="f-agent">Agent</label>
+    <select id="f-agent">
+      <option value="">All</option>
+    </select>
+  </div>
+
+  <section>
+    <h2>Agents</h2>
+    <table id="t-agents">
+      <thead>
+        <tr>
+          <th>Agent</th>
+          <th>User</th>
+          <th>State</th>
+          <th>Last heartbeat</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Recent leases</h2>
+    <table id="t-leases">
+      <thead>
+        <tr>
+          <th>Started</th>
+          <th>Lender</th>
+          <th>Borrower</th>
+          <th>Requests</th>
+          <th>Closed</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <div class="footer-meta" id="footer-meta"></div>
+</main>
+
+<div class="modal-backdrop" id="auth-modal">
+  <form class="modal" id="auth-form">
+    <h2>Enter AUTH_SECRET</h2>
+    <p>The dashboard talks to the API with your operator bearer token. It is stored in this browser only.</p>
+    <input
+      type="password"
+      id="auth-input"
+      placeholder="bearer token"
+      autocomplete="off"
+      spellcheck="false"
+      required
+    />
+    <div class="error" id="auth-error"></div>
+    <div class="modal-actions">
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</div>
+
+<script type="module">
+  "use strict";
+
+  const STORAGE_KEY = "claudepool_bearer";
+  const POLL_MS = 10_000;
+
+  const $ = (sel) => document.querySelector(sel);
+  const els = {
+    status: $("#status"),
+    refresh: $("#refresh"),
+    signout: $("#signout"),
+    range: $("#f-range"),
+    agent: $("#f-agent"),
+    agentsBody: $("#t-agents tbody"),
+    leasesBody: $("#t-leases tbody"),
+    modal: $("#auth-modal"),
+    form: $("#auth-form"),
+    input: $("#auth-input"),
+    error: $("#auth-error"),
+    footer: $("#footer-meta"),
+  };
+
+  let bearer = localStorage.getItem(STORAGE_KEY) || "";
+  let pollTimer = null;
+
+  // ---------- auth modal ----------
+
+  function showAuthModal(message) {
+    els.error.textContent = message || "";
+    els.modal.classList.add("shown");
+    els.input.value = "";
+    els.input.focus();
+  }
+  function hideAuthModal() {
+    els.modal.classList.remove("shown");
+    els.error.textContent = "";
+  }
+  els.form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const val = els.input.value.trim();
+    if (!val) return;
+    bearer = val;
+    localStorage.setItem(STORAGE_KEY, val);
+    hideAuthModal();
+    refresh();
+  });
+  els.signout.addEventListener("click", () => {
+    localStorage.removeItem(STORAGE_KEY);
+    bearer = "";
+    els.agentsBody.innerHTML = "";
+    els.leasesBody.innerHTML = "";
+    showAuthModal();
+  });
+
+  // ---------- API ----------
+
+  async function api(path) {
+    const res = await fetch(path, {
+      headers: { Authorization: `Bearer ${bearer}` },
+    });
+    if (res.status === 401) {
+      const err = new Error("unauthorized");
+      err.status = 401;
+      throw err;
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // ---------- formatting ----------
+
+  const fmtTime = (ts) => new Date(ts).toLocaleTimeString();
+  const fmtRelative = (ts) => {
+    const diff = Date.now() - ts;
+    if (diff < 0) return "in " + fmtDuration(-diff);
+    if (diff < 1000) return "just now";
+    return fmtDuration(diff) + " ago";
+  };
+  const fmtDuration = (ms) => {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m " + (s % 60) + "s";
+    const h = Math.floor(m / 60);
+    return h + "h " + (m % 60) + "m";
+  };
+
+  function agentState(a) {
+    if (a.cooldownUntil && a.cooldownUntil > Date.now()) return "cooling";
+    return a.status;
+  }
+
+  // ---------- rendering ----------
+
+  function renderAgents(agents) {
+    if (!agents.length) {
+      els.agentsBody.innerHTML =
+        '<tr><td colspan="4" class="empty">No agents registered.</td></tr>';
+      return;
+    }
+    const rows = agents.map((a) => {
+      const state = agentState(a);
+      return `<tr>
+        <td>${escape(a.agentId)}</td>
+        <td>${escape(a.userId)}</td>
+        <td><span class="pill ${state}">${state}</span></td>
+        <td class="muted" title="${escape(fmtTime(a.lastHeartbeatAt))}">${escape(fmtRelative(a.lastHeartbeatAt))}</td>
+      </tr>`;
+    });
+    els.agentsBody.innerHTML = rows.join("");
+  }
+
+  function renderLeases(entries) {
+    if (!entries.length) {
+      els.leasesBody.innerHTML =
+        '<tr><td colspan="6" class="empty">No leases in this window.</td></tr>';
+      return;
+    }
+    const rows = entries.map((e) => {
+      const reason = e.closedReason || "open";
+      return `<tr>
+        <td class="muted" title="${escape(fmtTime(e.leasedAt))}">${escape(fmtRelative(e.leasedAt))}</td>
+        <td>${escape(e.lenderUserId)} <span class="muted">(${escape(e.lenderAgentId)})</span></td>
+        <td>${escape(e.borrowerUserId)} <span class="muted">(${escape(e.borrowerAgentId)})</span></td>
+        <td>${e.requestCount}</td>
+        <td><span class="pill ${reason}">${reason}</span></td>
+        <td class="muted">${escape(fmtDuration(e.durationMs))}</td>
+      </tr>`;
+    });
+    els.leasesBody.innerHTML = rows.join("");
+  }
+
+  function refreshAgentFilter(agents) {
+    const current = els.agent.value;
+    const known = new Set(agents.map((a) => a.agentId));
+    // Drop options that no longer exist (except "All").
+    [...els.agent.options].slice(1).forEach((opt) => {
+      if (!known.has(opt.value)) opt.remove();
+    });
+    // Add any new agents.
+    const present = new Set([...els.agent.options].map((o) => o.value));
+    for (const a of agents) {
+      if (!present.has(a.agentId)) {
+        const opt = document.createElement("option");
+        opt.value = a.agentId;
+        opt.textContent = `${a.userId} (${a.agentId})`;
+        els.agent.appendChild(opt);
+      }
+    }
+    if ([...els.agent.options].some((o) => o.value === current)) {
+      els.agent.value = current;
+    }
+  }
+
+  function escape(v) {
+    return String(v).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[c]));
+  }
+
+  // ---------- refresh loop ----------
+
+  let refreshing = false;
+
+  async function refresh() {
+    if (!bearer) {
+      showAuthModal();
+      return;
+    }
+    if (refreshing) return;
+    refreshing = true;
+    els.status.textContent = "refreshing…";
+    try {
+      const rangeMs = Number(els.range.value);
+      const since = Date.now() - rangeMs;
+      const agentId = els.agent.value;
+      const auditQs = new URLSearchParams({ since: String(since), limit: "100" });
+      if (agentId) auditQs.set("agentId", agentId);
+
+      const [agentsRes, auditRes] = await Promise.all([
+        api("/agents"),
+        api("/audit?" + auditQs.toString()),
+      ]);
+      refreshAgentFilter(agentsRes.agents);
+      renderAgents(agentsRes.agents);
+      renderLeases(auditRes.entries);
+      els.status.textContent = `updated ${fmtTime(Date.now())}`;
+      els.footer.textContent =
+        `${agentsRes.agents.length} agents · ${auditRes.entries.length} leases · auto-refresh every ${POLL_MS / 1000}s`;
+    } catch (err) {
+      if (err.status === 401) {
+        showAuthModal("Token rejected. Try again.");
+      } else {
+        els.status.textContent = "error: " + err.message;
+      }
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(refresh, POLL_MS);
+  }
+  function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  els.refresh.addEventListener("click", refresh);
+  els.range.addEventListener("change", refresh);
+  els.agent.addEventListener("change", refresh);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopPolling();
+    else { refresh(); startPolling(); }
+  });
+
+  // ---------- boot ----------
+
+  if (!bearer) {
+    showAuthModal();
+  } else {
+    refresh();
+  }
+  startPolling();
+</script>
+</body>
+</html>

@@ -311,6 +311,36 @@ describe("routes", () => {
     })
   })
 
+  describe("GET /dashboard", () => {
+    const unauth = (path: string) =>
+      new Request(`http://localhost${path}`, { method: "GET" })
+
+    it("serves HTML without auth", async () => {
+      const res = await app.fetch(unauth("/dashboard"))
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type") ?? "").toContain("text/html")
+      const body = await res.text()
+      expect(body).toContain("<!doctype html>")
+      expect(body).toContain("claude-pool")
+    })
+
+    it("does not leak the AUTH_SECRET into the HTML", async () => {
+      const res = await app.fetch(unauth("/dashboard"))
+      const body = await res.text()
+      expect(body).not.toContain("test-secret")
+    })
+
+    it("does not weaken auth on /agents", async () => {
+      const res = await app.fetch(unauth("/agents"))
+      expect(res.status).toBe(401)
+    })
+
+    it("does not weaken auth on /audit", async () => {
+      const res = await app.fetch(unauth("/audit"))
+      expect(res.status).toBe(401)
+    })
+  })
+
   describe("GET /metrics", () => {
     const unauth = (path: string) =>
       new Request(`http://localhost${path}`, { method: "GET" })
