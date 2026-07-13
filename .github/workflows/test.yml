@@ -8,9 +8,13 @@ on:
 
 jobs:
   test:
-    name: bun test
-    runs-on: ubuntu-latest
+    name: bun test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

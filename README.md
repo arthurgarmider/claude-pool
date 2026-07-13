@@ -54,7 +54,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-### 2. Agent — each teammate installs on their Mac
+### 2. Agent — each teammate installs on their Mac or Linux box
 
 ```bash
 # Requires Bun: https://bun.sh
@@ -70,7 +70,7 @@ That's it. Claude Code picks up the pool automatically via `ANTHROPIC_BASE_URL`.
 
 ## How it works
 
-1. Each teammate runs an **agent** daemon on their Mac
+1. Each teammate runs an **agent** daemon on their Mac or Linux machine
 2. The agent runs a local reverse proxy that Claude Code talks through
 3. A lightweight **server** tracks who is active and idle, holds encrypted credentials, and arbitrates leases
 4. When the proxy sees a 429, it borrows an idle credential from the server, retries, and benches the rate-limited credential for the cooldown window
@@ -126,7 +126,7 @@ All routes require `Authorization: Bearer $AUTH_SECRET`.
 
 ## OAuth mode (experimental — read before using)
 
-In addition to API keys, the agent can register a Claude Code OAuth token from your macOS Keychain.
+In addition to API keys, the agent can register a Claude Code OAuth token read from your Claude Code login — the macOS Keychain on Mac, or `~/.claude/.credentials.json` (with `secret-tool`/libsecret as a fallback) on Linux.
 
 **Pooling personal Claude Code OAuth tokens across users may violate Anthropic's [Usage Policy](https://www.anthropic.com/legal/usage-policy).** Personal credentials are generally non-transferable.
 
@@ -143,7 +143,7 @@ When a lender has both an API key and an OAuth token registered, the server pref
 
 ## Requirements
 
-- macOS (agent)
+- macOS or Linux (agent — Ubuntu 22.04+, Debian 12, Arch)
 - [Bun](https://bun.sh) runtime
 - Docker (server)
 - An Anthropic API key (`sk-ant-api-…`) per pool member
